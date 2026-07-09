@@ -56,5 +56,9 @@ data/documents/*
 data/chroma_db/*
 !data/chroma_db/.gitkeep
 
+# ChromaDB runtime data (generated, may be version-specific)
+backend/data/chroma_db/*
+!backend/data/chroma_db/.gitkeep
+
 # Logs
 *.log

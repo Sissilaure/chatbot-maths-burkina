@@ -1,8 +1,10 @@
 import os
+import shutil
 import chromadb
 from chromadb.config import Settings
 from llama_index.core import VectorStoreIndex, StorageContext, Document, Settings as LlamaSettings
 from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from config import config
@@ -26,29 +28,42 @@ class RAGSystem:
         self.index = None
         self.storage_context = None
         
-    def initialize_vector_store(self):
-        """Initialize or load the vector store"""
+    def _build_index(self, collection):
+        vector_store = ChromaVectorStore(chroma_collection=collection)
+        self.storage_context = StorageContext.from_defaults(vector_store=vector_store)
+        self.index = VectorStoreIndex.from_vector_store(
+            vector_store=vector_store,
+            embed_model=self.embed_model
+        )
+
+    def _get_or_create_collection(self):
         try:
-            collection = self.chroma_client.get_collection(name=self.collection_name)
-            vector_store = ChromaVectorStore(chroma_collection=collection)
-            self.storage_context = StorageContext.from_defaults(vector_store=vector_store)
-            self.index = VectorStoreIndex.from_vector_store(
-                vector_store=vector_store,
-                embed_model=self.embed_model
-            )
+            return self.chroma_client.get_collection(name=self.collection_name)
+        except Exception:
+            return self.chroma_client.create_collection(name=self.collection_name)
+
+    def _reset_store(self):
+        """Remove an incompatible/corrupt persisted store and recreate the client."""
+        shutil.rmtree(config.CHROMA_PERSIST_DIR, ignore_errors=True)
+        os.makedirs(config.CHROMA_PERSIST_DIR, exist_ok=True)
+        self.chroma_client = chromadb.PersistentClient(path=config.CHROMA_PERSIST_DIR)
+
+    def initialize_vector_store(self):
+        """Initialize or load the vector store.
+
+        If the persisted ChromaDB was created by an incompatible version
+        (e.g. a schema mismatch), it is reset automatically instead of
+        crashing the application.
+        """
+        try:
+            collection = self._get_or_create_collection()
+            self._build_index(collection)
             print("Vector store loaded successfully")
         except Exception as e:
-            print(f"Creating new vector store: {e}")
-            try:
-                collection = self.chroma_client.create_collection(name=self.collection_name)
-            except:
-                collection = self.chroma_client.get_collection(name=self.collection_name)
-            vector_store = ChromaVectorStore(chroma_collection=collection)
-            self.storage_context = StorageContext.from_defaults(vector_store=vector_store)
-            self.index = VectorStoreIndex.from_vector_store(
-                vector_store=vector_store,
-                embed_model=self.embed_model
-            )
+            print(f"Existing vector store is incompatible, resetting it: {e}")
+            self._reset_store()
+            collection = self._get_or_create_collection()
+            self._build_index(collection)
             print("Vector store initialized")
     
     def add_documents(self, documents, metadata=None):
@@ -83,19 +98,21 @@ class RAGSystem:
         if top_k is None:
             top_k = config.TOP_K
         
-        filters = {}
+        exact_filters = []
         if class_level:
-            filters["class"] = class_level
+            exact_filters.append(ExactMatchFilter(key="class", value=class_level))
         if chapter:
-            filters["chapter"] = chapter
+            exact_filters.append(ExactMatchFilter(key="chapter", value=chapter))
         
-        query_engine = self.index.as_query_engine(
+        metadata_filters = MetadataFilters(filters=exact_filters) if exact_filters else None
+        # Use a retriever (embeddings only) instead of a query engine so that
+        # no external LLM (e.g. OpenAI) is required for document retrieval.
+        retriever = self.index.as_retriever(
             similarity_top_k=top_k,
-            filters=filters if filters else None
+            filters=metadata_filters
         )
         
-        response = query_engine.query(question)
-        return response
+        return retriever.retrieve(question)
     
     def search_internet(self, query):
         """Fallback internet search using DuckDuckGo"""
@@ -126,12 +143,12 @@ class RAGSystem:
             sources = []
             
             try:
-                response = self.query(question, class_level, chapter)
-                if response and len(response.source_nodes) > 0:
-                    context = "\n".join([node.text for node in response.source_nodes])
-                    sources = [node.metadata for node in response.source_nodes]
-            except:
-                pass  # RAG failed, continue without context
+                nodes = self.query(question, class_level, chapter)
+                if nodes:
+                    context = "\n".join([node.get_content() for node in nodes])
+                    sources = [node.metadata for node in nodes]
+            except Exception as e:
+                print(f"RAG retrieval failed, continuing without context: {e}")
             
             # Generate answer using Hugging Face API
             answer = self._generate_with_hf(question, context, class_level, chapter)
