@@ -9,7 +9,7 @@ class Config:
     HUGGINGFACE_MODEL = os.getenv("HUGGINGFACE_MODEL", "mistralai/Mistral-7B-Instruct-v0.2")
     
     # ChromaDB Configuration
-    CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "../data/chroma_db")
+    CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./data/chroma_db")
     
     # Application Configuration
     APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
@@ -22,6 +22,6 @@ class Config:
     TOP_K = 4
     
     # Data Directory
-    DATA_DIR = "../data/documents"
+    DATA_DIR = os.getenv("DATA_DIR", "./data/documents")
 
 config = Config()
