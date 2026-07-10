@@ -1,0 +1,23 @@
+Cours de mathématiques - Classe de 6ème
+
+Chapitre : Fractions
+
+1. Définition d'une fraction
+Une fraction représente un ou plusieurs morceaux d'une unité partagée en parts égales.
+Elle s'écrit sous la forme a/b où :
+- "a" est le numérateur (le nombre de parts que l'on prend)
+- "b" est le dénominateur (en combien de parts égales l'unité est divisée). Le dénominateur ne peut pas être zéro.
+
+2. Simplification de fractions
+Pour simplifier une fraction, on divise le numérateur et le dénominateur par un même nombre entier non nul.
+Exemple : 4/8 = (4÷4)/(8÷4) = 1/2.
+Une fraction est irréductible lorsqu'on ne peut plus la simplifier.
+
+3. Addition de fractions
+Pour additionner deux fractions ayant le même dénominateur, on additionne les numérateurs et on garde le dénominateur.
+Exemple : 2/5 + 1/5 = (2+1)/5 = 3/5.
+
+Si les dénominateurs sont différents, il faut d'abord réduire les fractions au même dénominateur.
+
+Exemple pour le Burkina Faso :
+Si tu as un sac de mil et que tu en donnes 1/4 à ton voisin et 2/4 à ta famille, tu as donné en tout : 1/4 + 2/4 = 3/4 du sac.
