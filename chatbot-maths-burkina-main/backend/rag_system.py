@@ -1,7 +1,18 @@
-import os
+﻿import os
+import re
+import json
 import shutil
+import logging
+from typing import Optional
 import chromadb
 from chromadb.config import Settings
+
+# La version de posthog installée est incompatible avec l'appel que fait chromadb 0.4.24 en
+# interne (`capture() takes 1 positional argument but 3 were given`) : anonymized_telemetry=False
+# désactive bien l'envoi réseau, mais chromadb tente quand même l'appel et logue une erreur à
+# chaque requête. C'est sans impact fonctionnel (capturé par son propre try/except), donc on
+# se contente de faire taire ce logger plutôt que de figer une version de posthog pour ça.
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 from llama_index.core import VectorStoreIndex, StorageContext, Document, Settings as LlamaSettings
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
@@ -9,11 +20,74 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from config import config
 from curriculum_data import CURRICULUM
-import requests
-from bs4 import BeautifulSoup
-import json
 import anthropic
-import re
+
+
+FIGURE_FORMAT_INSTRUCTIONS = """FIGURES GÉOMÉTRIQUES — RÈGLE ABSOLUE, PRIORITAIRE SUR TOUT LE RESTE :
+Dès qu'une figure, un schéma ou un dessin serait utile (triangle, cercle, angle, repère, configuration de \
+Thalès/Pythagore, solide, droites...), tu DOIS le produire EXCLUSIVEMENT avec un bloc de code étiqueté `figure` \
+contenant du JSON valide. C'est INTERDIT de dessiner une figure autrement.
+INTERDICTIONS STRICTES, sans AUCUNE exception, même si on te le demande explicitement : jamais de schéma en ASCII \
+art (jamais de caractères `|`, `/`, `\\`, `-`, `_`, `+` alignés pour représenter des traits ou des côtés), jamais \
+un bloc de code sans l'étiquette `figure`, jamais de description uniquement textuelle à la place du schéma. \
+Un triangle esquissé avec des barres et des traits est un ÉCHEC : utilise TOUJOURS le JSON ci-dessous à la place.
+
+Syntaxe exacte à reproduire (l'étiquette `figure` après les trois backticks est obligatoire) :
+```figure
+{"points":[{"id":"A","x":0,"y":0},{"id":"B","x":4,"y":0},{"id":"C","x":0,"y":3}],
+"segments":[{"from":"A","to":"B"},{"from":"B","to":"C"},{"from":"C","to":"A"}],
+"angles":[{"vertex":"A","from":"B","to":"C","right":true}],
+"polygons":[{"points":["A","B","C"],"fill":true}],
+"circles":[{"center":"A","radius":2}],
+"labels":[{"text":"3 cm","x":0,"y":1.5}]}
+```
+Règles du JSON : coordonnées libres en unités abstraites (pas besoin d'échelle réaliste), les `segments` relient \
+des points déjà déclarés dans `points`, mets `"right": true` sur un angle droit plutôt qu'une valeur en degrés, \
+n'inclus `circles`/`polygons`/`labels`/`angles` que si nécessaire pour cette figure précise. Chaque point de \
+`points` est DÉJÀ étiqueté automatiquement avec son `id` (A, B, C...) : ne remets JAMAIS ce même nom dans `labels`, \
+qui sert UNIQUEMENT à des annotations supplémentaires (longueur d'un côté comme "3 cm", nom d'une droite, relation \
+comme "(BC) // (DE)"). Place chaque `label` LÉGÈREMENT À L'ÉCART du trait ou de la forme qu'il annote (décalé \
+perpendiculairement au segment, jamais pile sur ses coordonnées ni à l'intérieur d'un polygone rempli), pour qu'il \
+ne se superpose pas au dessin. Place ce bloc directement dans ta réponse, au bon endroit dans le texte."""
+
+NO_EMOJI_INSTRUCTIONS = """TON ET MISE EN FORME — RÈGLE ABSOLUE : N'utilise JAMAIS d'emoji ni de pictogramme (aucun symbole \
+du type ✅, ⚠️, 💡, 🎉, 👋, 💪, 📐, 🚀, ✨, etc.), nulle part dans ta réponse, même pour marquer une réussite, un \
+conseil ou un encouragement. Marque l'importance uniquement avec la mise en forme Markdown : **gras** pour les \
+notions clés, `##`/`###` pour les titres, `>` pour une remarque importante. Écris comme un professeur ou un manuel \
+scolaire soigné, jamais comme un assistant conversationnel générique."""
+
+# Certains modèles récents (dont celui configuré ici) refusent qu'une conversation se termine
+# par un tour "assistant" (pas de préremplissage) : la relance automatique en cas de réponse
+# tronquée doit donc se terminer par ce message utilisateur plutôt que par le texte déjà généré.
+CONTINUE_INSTRUCTION = ("Continue exactement là où tu t'es arrêté ci-dessus, sans rien répéter de ce qui "
+                        "précède et sans rien ajouter avant (ni préambule, ni excuse) : je recolle ta "
+                        "réponse précédente et cette suite bout à bout.")
+
+# \b \f \r \t sont des échappements JSON valides à part entière, mais dans CE contexte (texte
+# mathématique LaTeX) ce sont presque toujours le début d'une commande cassée (\frac, \times,
+# \text, \to, \tan, \forall, \boxed, \begin...), jamais un vrai caractère de contrôle voulu — les
+# exclure du jeu "sûr" pour qu'ils soient réparés. \n reste sûr (sauts de ligne très fréquents et
+# légitimes dans les solutions), au prix d'un résidu rare (\neq/\nabla cassés seraient mal réparés).
+_JSON_VALID_ESCAPE_CHARS = '"\\/nu'
+
+
+def _repair_latex_json_escapes(text: str) -> str:
+    """Double tout backslash qui ne fait pas déjà partie d'un échappement JSON jugé sûr ici (\\",
+    \\\\, \\/, \\n, \\uXXXX). Répare les commandes LaTeX (\\vec, \\frac, \\det...) écrites en JSON
+    avec un seul backslash au lieu de deux — un backslash simple suivi d'une lettre quelconque
+    n'est pas un échappement JSON valide et fait échouer json.loads()."""
+    return re.sub(r"\\(.)", lambda m: m.group(0) if m.group(1) in _JSON_VALID_ESCAPE_CHARS else "\\\\" + m.group(1),
+                  text, flags=re.DOTALL)
+
+# Échelle de difficulté des exercices, en étoiles (1 à 4) : le niveau 4 correspond aux
+# "situations d'intégration" du programme burkinabè (énoncé contextualisé, plusieurs notions).
+STAR_DIFFICULTY_LABELS = {
+    1: "1 ÉTOILE — QCM D'APPLICATION DIRECTE (une seule notion de base, restitution immédiate du cours)",
+    2: "2 ÉTOILES — APPLICATION GUIDÉE (1-2 étapes de raisonnement)",
+    3: "3 ÉTOILES — NOTIONS COMBINÉES (plusieurs étapes, proche d'une évaluation de classe)",
+    4: "4 ÉTOILES — SITUATION D'INTÉGRATION (énoncé contextualisé complexe, plusieurs notions combinées, niveau examen)",
+}
+
 
 class RAGSystem:
     def __init__(self):
@@ -21,7 +95,7 @@ class RAGSystem:
             model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         )
         LlamaSettings.embed_model = self.embed_model
-        
+
         # Configuration Anthropic Claude
         self.anthropic_api_key = config.ANTHROPIC_API_KEY
         self.anthropic_model = config.ANTHROPIC_MODEL
@@ -32,12 +106,17 @@ class RAGSystem:
                 print(f"[OK] Anthropic Claude API configuree avec le modele {self.anthropic_model}")
             except Exception as e:
                 print(f"[WARN] Erreur initialisation Anthropic: {e}")
-        
-        self.chroma_client = chromadb.PersistentClient(path=config.CHROMA_PERSIST_DIR)
+        else:
+            print("[WARN] ANTHROPIC_API_KEY manquante : le mode local degrade sera utilise.")
+
+        self.chroma_client = chromadb.PersistentClient(
+            path=config.CHROMA_PERSIST_DIR,
+            settings=Settings(anonymized_telemetry=False),
+        )
         self.collection_name = "maths_burkina"
         self.index = None
         self.storage_context = None
-        
+
     def _build_index(self, collection):
         vector_store = ChromaVectorStore(chroma_collection=collection)
         self.storage_context = StorageContext.from_defaults(vector_store=vector_store)
@@ -55,7 +134,10 @@ class RAGSystem:
     def _reset_store(self):
         shutil.rmtree(config.CHROMA_PERSIST_DIR, ignore_errors=True)
         os.makedirs(config.CHROMA_PERSIST_DIR, exist_ok=True)
-        self.chroma_client = chromadb.PersistentClient(path=config.CHROMA_PERSIST_DIR)
+        self.chroma_client = chromadb.PersistentClient(
+            path=config.CHROMA_PERSIST_DIR,
+            settings=Settings(anonymized_telemetry=False),
+        )
 
     def initialize_vector_store(self):
         try:
@@ -68,11 +150,11 @@ class RAGSystem:
             collection = self._get_or_create_collection()
             self._build_index(collection)
             print("Vector store initialized")
-    
+
     def add_documents(self, documents, metadata=None):
         if metadata is None:
             metadata = {}
-        
+
         docs = []
         for doc in documents:
             doc_metadata = metadata.copy()
@@ -83,101 +165,238 @@ class RAGSystem:
                 ))
             else:
                 docs.append(Document(text=doc, metadata=doc_metadata))
-        
+
         splitter = SentenceSplitter(
             chunk_size=config.CHUNK_SIZE,
             chunk_overlap=config.CHUNK_OVERLAP
         )
-        
+
         for doc in docs:
             nodes = splitter.get_nodes_from_documents([doc])
             self.index.insert_nodes(nodes)
-        
+
         print(f"Added {len(docs)} documents to vector store")
-    
+
+    def _retrieve_with_filters(self, question, filters, top_k):
+        metadata_filters = MetadataFilters(filters=filters) if filters else None
+        retriever = self.index.as_retriever(
+            similarity_top_k=top_k,
+            filters=metadata_filters
+        )
+        return retriever.retrieve(question)
+
     def query(self, question, class_level=None, chapter=None, top_k=None):
         if top_k is None:
             top_k = config.TOP_K
-        
+
         exact_filters = []
         if class_level:
             exact_filters.append(ExactMatchFilter(key="class", value=class_level))
         if chapter:
             exact_filters.append(ExactMatchFilter(key="chapter", value=chapter))
-        
-        metadata_filters = MetadataFilters(filters=exact_filters) if exact_filters else None
-        retriever = self.index.as_retriever(
-            similarity_top_k=top_k,
-            filters=metadata_filters
-        )
-        
-        return retriever.retrieve(question)
-    
-    def search_internet(self, query):
-        try:
-            url = "https://duckduckgo.com/html/"
-            params = {"q": f"mathématiques {query}"}
-            headers = {"User-Agent": "Mozilla/5.0"}
-            
-            response = requests.get(url, params=params, headers=headers, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            results = []
-            for result in soup.find_all('a', class_='result__url', limit=5):
-                title = result.get_text()
-                link = result.get('href')
-                results.append({"title": title, "link": link})
-            
-            return results
-        except Exception as e:
-            print(f"Internet search error: {e}")
-            return []
 
-    def _call_claude(self, system_prompt: str, user_message: str, max_tokens: int = 1024) -> str:
-        """Appelle l'API Claude d'Anthropic et retourne la réponse texte."""
-        if not self.anthropic_client:
-            print("⚠️ Anthropic client non initialisé (clé API manquante ?)")
-            return None
-        
+        nodes = self._retrieve_with_filters(question, exact_filters, top_k)
+        if nodes or not (class_level and chapter):
+            return nodes
+
+        # Les documents importes depuis des exports ZIP/Drive n'ont pas toujours un
+        # libelle de chapitre identique au curriculum. On garde alors la classe, mais
+        # on relache le filtre chapitre pour ne pas ignorer les manuels disponibles.
+        class_only_filters = [ExactMatchFilter(key="class", value=class_level)]
+        return self._retrieve_with_filters(question, class_only_filters, top_k)
+
+    def find_course_file_from_index(self, class_level: str, chapter: str) -> Optional[str]:
+        """Cherche un document de cours via un filtre EXACT classe+chapitre dans l'index vectoriel,
+        plutôt que par correspondance de noms de fichiers (voir document_processor.find_course_file).
+        Fiable — contrairement à une recherche par similarité — car il s'agit d'une égalité stricte
+        sur les métadonnées : ne peut renvoyer un document que si l'ingestion l'a explicitement classé
+        sous ce couple (classe, chapitre) exact, ce qu'elle fait désormais en lisant le CONTENU des
+        documents (voir ingest_documents.py::classify_chapter_from_content), pas leur nom de fichier."""
         try:
-            response = self.anthropic_client.messages.create(
-                model=self.anthropic_model,
-                max_tokens=max_tokens,
-                temperature=0.3,
-                system=system_prompt,
-                messages=[
-                    {"role": "user", "content": user_message}
-                ]
+            nodes = self._retrieve_with_filters(
+                chapter,
+                [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
+                top_k=1,
             )
-            # Extraire le texte de la réponse
-            text = ""
-            for block in response.content:
-                if hasattr(block, 'text'):
-                    text += block.text
-                elif isinstance(block, dict) and 'text' in block:
-                    text += block['text']
-            return text.strip() if text.strip() else None
-        
+        except Exception as e:
+            print(f"[WARN] Recherche du cours dans l'index echouee: {e}")
+            return None
+        if not nodes:
+            return None
+        source = nodes[0].metadata.get("source")
+        return source if source and os.path.isfile(source) else None
+
+    def collection_count(self):
+        try:
+            collection = self._get_or_create_collection()
+            return collection.count()
+        except Exception as e:
+            print(f"Chroma count failed: {e}")
+            return 0
+
+    # ========================================================================
+    # APPEL CLAUDE (support multi-tours)
+    # ========================================================================
+
+    def _create_message(self, system_prompt: str, messages: list, max_tokens: int, temperature: float,
+                         tools: list = None):
+        """Un seul appel bas niveau à l'API Messages, avec repli si le modèle rejette `temperature`."""
+        kwargs = {
+            "model": self.anthropic_model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": system_prompt,
+            "messages": messages,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        try:
+            return self.anthropic_client.messages.create(**kwargs)
+        except anthropic.BadRequestError as e:
+            # Certains modèles récents (ex: reasoning models) rejettent un temperature
+            # personnalisé. On retente sans ce paramètre plutôt que de tout faire échouer.
+            if "temperature" in str(e).lower():
+                kwargs.pop("temperature")
+                return self.anthropic_client.messages.create(**kwargs)
+            raise
+
+    @staticmethod
+    def _extract_text(response) -> str:
+        text = ""
+        for block in response.content:
+            if hasattr(block, 'text'):
+                text += block.text
+            elif isinstance(block, dict) and 'text' in block:
+                text += block['text']
+        return text
+
+    def _call_claude(self, system_prompt: str, messages: list, max_tokens: int = 1024,
+                      temperature: float = None, tools: list = None) -> str:
+        """Appelle l'API Claude d'Anthropic avec un historique de messages et retourne le texte.
+
+        Si la réponse est coupée par la limite de tokens (stop_reason == "max_tokens"), relance
+        automatiquement la génération (en lui redonnant le texte déjà produit et en lui demandant
+        de continuer directement à la suite) pour que l'élève reçoive toujours une réponse complète."""
+        if not self.anthropic_client:
+            print("[WARN] Anthropic client non initialise (cle API manquante ?)")
+            return None
+
+        temp = temperature if temperature is not None else config.ANTHROPIC_TEMPERATURE
+        try:
+            current_messages = list(messages)
+            accumulated = ""
+            for attempt in range(config.MAX_AUTO_CONTINUATIONS + 1):
+                response = self._create_message(system_prompt, current_messages, max_tokens, temp, tools=tools)
+                accumulated += self._extract_text(response)
+
+                if response.stop_reason == "max_tokens" and attempt < config.MAX_AUTO_CONTINUATIONS:
+                    if accumulated.strip():
+                        # Reponse partielle : on demande de continuer directement a la suite.
+                        current_messages = list(messages) + [
+                            {"role": "assistant", "content": accumulated},
+                            {"role": "user", "content": CONTINUE_INSTRUCTION},
+                        ]
+                    else:
+                        # Le budget de tokens a ete integralement consomme par le raisonnement
+                        # interne du modele (frequent sur les exercices complexes/figures
+                        # geometriques), sans laisser une seule reponse textuelle : impossible de
+                        # "continuer" un tour assistant vide (l'API le refuse), donc on relance la
+                        # meme requete depuis le debut plutot que d'abandonner silencieusement.
+                        current_messages = list(messages)
+                    continue
+                break
+
+            return accumulated.strip() if accumulated.strip() else None
+
         except anthropic.APIError as e:
-            print(f"⚠️ Erreur API Anthropic: {e}")
+            print(f"[ERREUR] API Anthropic: {e}")
             return None
         except anthropic.RateLimitError as e:
-            print(f"⚠️ Rate limit Anthropic: {e}")
+            print(f"[ERREUR] Rate limit Anthropic: {e}")
             return None
         except Exception as e:
-            print(f"⚠️ Erreur Anthropic: {e}")
+            print(f"[ERREUR] Anthropic: {e}")
             return None
+
+    def _stream_claude(self, system_prompt: str, messages: list, max_tokens: int = 1024,
+                        temperature: float = None):
+        """Version streaming de `_call_claude` : yield des fragments de texte au fur et à mesure,
+        avec la même logique de continuation automatique si la réponse est tronquée."""
+        if not self.anthropic_client:
+            return
+
+        temp = temperature if temperature is not None else config.ANTHROPIC_TEMPERATURE
+        current_messages = list(messages)
+        accumulated = ""
+
+        for attempt in range(config.MAX_AUTO_CONTINUATIONS + 1):
+            stop_reason = None
+
+            # `messages.stream(...)` ne fait la requête HTTP qu'à l'entrée du context manager
+            # (__enter__), donc le repli "sans temperature" doit être tenté à ce moment-là,
+            # pas au moment de la simple construction de l'objet stream.
+            stream_ctx = self.anthropic_client.messages.stream(
+                model=self.anthropic_model, max_tokens=max_tokens, temperature=temp,
+                system=system_prompt, messages=current_messages
+            )
+            try:
+                stream = stream_ctx.__enter__()
+            except anthropic.BadRequestError as e:
+                if "temperature" not in str(e).lower():
+                    raise
+                stream_ctx = self.anthropic_client.messages.stream(
+                    model=self.anthropic_model, max_tokens=max_tokens,
+                    system=system_prompt, messages=current_messages
+                )
+                stream = stream_ctx.__enter__()
+
+            try:
+                for text in stream.text_stream:
+                    accumulated += text
+                    yield text
+                stop_reason = stream.get_final_message().stop_reason
+            finally:
+                stream_ctx.__exit__(None, None, None)
+
+            if stop_reason == "max_tokens" and attempt < config.MAX_AUTO_CONTINUATIONS:
+                if accumulated.strip():
+                    current_messages = list(messages) + [
+                        {"role": "assistant", "content": accumulated},
+                        {"role": "user", "content": CONTINUE_INSTRUCTION},
+                    ]
+                else:
+                    # Meme cas que dans _call_claude : rien de textuel produit du tout (budget
+                    # entierement consomme par le raisonnement interne) — on relance depuis zero.
+                    current_messages = list(messages)
+                continue
+            break
+
+    @staticmethod
+    def _build_history_messages(history: list, current_user_message: str) -> list:
+        """Convertit l'historique frontend ([{role, content}, ...]) en messages Anthropic,
+        tronque aux N derniers échanges et ajoute le message courant."""
+        messages = []
+        if history:
+            max_messages = config.HISTORY_MAX_TURNS * 2
+            trimmed = history[-max_messages:]
+            for turn in trimmed:
+                role = turn.get("role")
+                content = turn.get("content", "")
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": current_user_message})
+        return messages
 
     # ========================================================================
     # GÉNÉRATION DE RÉPONSES (chat)
     # ========================================================================
-    
-    def generate_response(self, question, class_level, chapter):
-        """Génère une réponse pédagogique via Claude + RAG."""
+
+    def generate_response(self, question, class_level, chapter, history=None):
+        """Génère une réponse pédagogique via Claude + RAG, avec mémoire de conversation."""
         try:
             context = ""
             sources = []
-            
+
             try:
                 nodes = self.query(question, class_level, chapter)
                 if nodes:
@@ -185,10 +404,9 @@ class RAGSystem:
                     sources = [node.metadata for node in nodes]
             except Exception as e:
                 print(f"RAG retrieval failed: {e}")
-            
-            # Essayer Claude d'abord
-            answer = self._generate_with_claude(question, context, class_level, chapter)
-            
+
+            answer = self._generate_with_claude(question, context, class_level, chapter, history)
+
             return {
                 "answer": answer,
                 "sources": sources,
@@ -202,130 +420,764 @@ class RAGSystem:
                 "from_rag": False,
                 "error": str(e)
             }
-    
-    def _generate_with_claude(self, question, context, class_level, chapter):
-        """Utilise Claude pour générer une réponse pédagogique de qualité."""
-       
-        system_prompt = """Tu es un professeur de mathématiques au Burkina Faso, expert du programme officiel burkinabè.
+
+    def _build_chat_prompt(self, question, context, class_level, chapter):
+        """Construit (system_prompt, user_message) pour une question de chat.
+        Partagé entre la génération classique et la génération en streaming."""
+
+        classe_txt = class_level if class_level else \
+            "non précisée par l'élève — déduis un niveau de langage raisonnable à partir de la question elle-même"
+        chapitre_txt = chapter if chapter else \
+            "non précisé par l'élève — identifie toi-même le thème mathématique concerné"
+
+        mission = (
+            f"Aider un élève de {class_level} à réellement comprendre le chapitre « {chapter} », "
+            "pas seulement lui donner un résultat."
+            if class_level or chapter else
+            "Aider un élève du Burkina Faso à réellement comprendre sa question de mathématiques, "
+            "pas seulement lui donner un résultat, même s'il n'a pas précisé sa classe ni son chapitre."
+        )
+
+        system_prompt = f"""Tu es « Prof Amira », un professeur de mathématiques expérimenté et bienveillant, \
+expert du programme officiel du Burkina Faso (de la 6ème à la Terminale).
+
+MISSION
+{mission}
+
+{FIGURE_FORMAT_INSTRUCTIONS}
+
+{NO_EMOJI_INSTRUCTIONS}
 
 RÈGLES À SUIVRE ABSOLUMENT :
-1. Réponds UNIQUEMENT à la question posée par l'élève
-2. Base-toi sur le contexte fourni (documents officiels)
-3. Adapte ton langage au niveau de la classe (6ème=simple, Terminale=avancé)
-4. Explique les concepts étape par étape
-5. Donne toujours un exemple concret adapté au Burkina Faso
-6. Utilise un ton encourageant et bienveillant
-7. Cite les formules mathématiques clairement
-8. Si le contexte ne contient pas la réponse, explique ce que tu sais sur le sujet
-9. NE DIS PAS que tu ne peux pas répondre - utilise tes connaissances en maths
-10. Inclus le **formatage Markdown** pour la lisibilité (gras pour les concepts clés)
+1. Utilise en priorité le CONTEXTE DOCUMENTAIRE fourni ci-dessous (extraits de manuels officiels). S'il est vide ou \
+insuffisant, réponds quand même avec tes connaissances mathématiques solides. NE DIS JAMAIS que tu ne peux pas répondre.
+2. N'invente jamais un fait, une source précise (page, numéro) que tu ne peux pas justifier avec le contexte fourni.
+3. Adapte le niveau de langue et la profondeur des explications à la classe : {classe_txt} \
+(vocabulaire simple en 6ème/5ème, formalisme rigoureux en Terminale).
+4. Structure TOUJOURS ta réponse en Markdown clair : titres courts avec ##, **gras** sur les notions clés, \
+listes numérotées pour les étapes de résolution.
+5. Pour TOUTE formule ou expression mathématique, utilise la syntaxe LaTeX : `$...$` pour une formule en ligne \
+et `$$...$$` pour une formule isolée. N'écris jamais une formule en texte brut (ex: écris $x^2 + 3x$, jamais x^2 + 3x). \
+Cela vaut aussi pour tous les symboles mathématiques (∈, ≤, ≥, √, π, →, ∑, ∞, vecteurs, etc.) : toujours en LaTeX \
+(`\\infty`, `\\in`, `\\leq`, `\\to`, `\\sqrt{{}}`...), jamais en Unicode brut ni épelés en toutes lettres. Écris \
+$+\\infty$, jamais « + infini » ; $x \\in \\mathbb{{R}}$, jamais « x appartient à R » ; un symbole mathématique \
+ne se remplace JAMAIS par le mot français qui le désigne.
+6. Quand tu résous un calcul ou un exercice, détaille CHAQUE étape sans en sauter aucune.
+7. Illustre avec un exemple concret et réaliste du quotidien burkinabè (marché, agriculture, artisanat, transport) \
+quand c'est pertinent pour la notion.
+8. Termine ta réponse par une courte question de compréhension ou une invitation à s'entraîner \
+(« Essaie maintenant avec... », « Est-ce plus clair ou veux-tu un autre exemple ? »).
+9. Si un historique de conversation est fourni, reste parfaitement cohérent avec les échanges précédents.
+10. Reste toujours encourageant et bienveillant, jamais condescendant.
 
-Ton objectif : que l'élève comprenne et progresse !"""
-        
-        context_text = context if context else "Aucun document spécifique disponible pour ce chapitre."
-        user_message = f"""Contexte documentaire (programme Burkina Faso):
-{context_text}
+CONTEXTE DOCUMENTAIRE (programme officiel burkinabè, peut être vide) :
+{context if context else "(Aucun document indexé pour ce chapitre — appuie-toi sur tes connaissances.)"}
+"""
 
-Chapitre: {chapter}
-Classe: {class_level}
+        user_message = f"""Chapitre : {chapitre_txt}
+Classe : {classe_txt}
 
-Question de l'élève: {question}
+Question de l'élève : {question}"""
 
-Réponds de façon claire et pédagogique:"""
-        
-        response = self._call_claude(system_prompt, user_message, max_tokens=1200)
+        return system_prompt, user_message
+
+    def _generate_with_claude(self, question, context, class_level, chapter, history=None):
+        """Utilise Claude pour générer une réponse pédagogique de qualité, avec contexte RAG et historique.
+        class_level et chapter peuvent être vides : l'élève a le droit de poser une question sans les préciser."""
+
+        system_prompt, user_message = self._build_chat_prompt(question, context, class_level, chapter)
+        messages = self._build_history_messages(history, user_message)
+        response = self._call_claude(system_prompt, messages, max_tokens=config.MAX_TOKENS_CHAT)
         if response:
             return response
-        
-        # Fallback si Claude indisponible
-        print("⚠️ Claude indisponible, utilisation du fallback local...")
+
+        print("[WARN] Claude indisponible, utilisation du fallback local...")
         return self._generate_local_response(question, class_level, chapter, context)
-    
+
+    def generate_response_stream(self, question, class_level, chapter, history=None):
+        """Génère la réponse en streaming : yield des dicts d'événements.
+        {"delta": "..."} pour chaque fragment de texte, puis un événement final
+        {"done": True, "sources": [...], "from_rag": bool} une fois la génération terminée."""
+        context = ""
+        sources = []
+
+        try:
+            nodes = self.query(question, class_level, chapter)
+            if nodes:
+                context = "\n".join([node.get_content()[:500] for node in nodes])
+                sources = [node.metadata for node in nodes]
+        except Exception as e:
+            print(f"RAG retrieval failed: {e}")
+
+        system_prompt, user_message = self._build_chat_prompt(question, context, class_level, chapter)
+        messages = self._build_history_messages(history, user_message)
+
+        got_any = False
+        if self.anthropic_client:
+            try:
+                for chunk in self._stream_claude(system_prompt, messages, max_tokens=config.MAX_TOKENS_CHAT):
+                    if chunk:
+                        got_any = True
+                        yield {"delta": chunk}
+            except Exception as e:
+                print(f"[ERREUR] streaming Claude: {e}")
+
+        if not got_any:
+            print("[WARN] Claude indisponible, utilisation du fallback local...")
+            text = self._generate_local_response(question, class_level, chapter, context)
+            yield {"delta": text}
+
+        yield {"done": True, "sources": sources, "from_rag": len(sources) > 0}
+
     # ========================================================================
     # SIMPLIFICATION
     # ========================================================================
-    
-    def simplify_answer(self, question: str, original_answer: str, class_level: str) -> str:
-        """Utilise Claude pour simplifier une réponse."""
-        
-        system_prompt = """Tu es professeur de maths au Burkina Faso. Tu dois RÉEXPLIQUER simplement.
+
+    def simplify_answer(self, question: str, original_answer: str, class_level: str, chapter: str = "") -> str:
+        """Utilise Claude pour reformuler une réponse de façon nettement plus simple."""
+
+        system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
+Un élève de {class_level} n'a PAS compris ta première explication sur « {chapter or "ce chapitre"} ». \
+Tu dois RÉEXPLIQUER, pas répéter.
 
 RÈGLES :
-- L'élève n'a PAS compris la première explication
-- Utilise des mots TRÈS SIMPLES, comme si tu parlais à un élève de 10-12 ans
-- Donne un exemple concret du quotidien au Burkina Faso
-- Sois encourageant : "Ce n'est pas grave, je vais t'expliquer autrement"
-- Évite le jargon technique, simplifie les formules
-- Structure en étapes claires et courtes"""
+- N'utilise PAS les mêmes phrases ni le même ordre que l'explication originale : change vraiment d'angle.
+- Utilise des mots TRÈS SIMPLES, comme si tu parlais à un enfant de 10-12 ans, quelle que soit la classe réelle.
+- Donne un exemple concret et imagé du quotidien au Burkina Faso (marché, terrain de foot, famille, etc.).
+- Sois chaleureux et rassurant : commence par une phrase du type « Pas de souci, on reprend autrement. »
+- Découpe en 2 à 4 étapes très courtes, une idée par étape.
+- Formules en LaTeX (`$...$`) si nécessaire, mais garde-les minimales.
+- Termine par une phrase d'encouragement.
 
-        user_message = f"""Niveau de l'élève: {class_level}
+{NO_EMOJI_INSTRUCTIONS}
+"""
 
-Question initiale: {question}
+        user_message = f"""Question initiale de l'élève : {question or "(non précisée)"}
 
-Explication à simplifier:
+Explication originale à simplifier :
 {original_answer[:1500]}
 
-Réécris cette explication de façon beaucoup plus simple:"""
-        
-        response = self._call_claude(system_prompt, user_message, max_tokens=800)
+Réécris cette explication de façon beaucoup plus simple et différente dans la formulation :"""
+
+        response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}],
+                                      max_tokens=config.MAX_TOKENS_SIMPLIFY)
         if response:
             return response
-        
-        # Fallback
+
         return self._local_simplify(question, original_answer, class_level)
-    
+
     # ========================================================================
-    # GÉNÉRATION D'EXERCICES
+    # REMÉDIATION (QCM diagnostique de 8 questions sur le chapitre)
     # ========================================================================
-    
-    def generate_exercise(self, class_level, chapter):
-        """Génère un exercice via Claude."""
-        
-        system_prompt = """Tu es professeur de mathématiques au Burkina Faso. Génère un EXERCICE.
+
+    def generate_remediation(self, class_level: str, chapter: str, history: list = None) -> list:
+        """QCM diagnostique de 8 questions sur le chapitre : sert à vérifier que l'élève a
+        compris le cours avant de continuer, et à repérer les notions précises à revoir sinon.
+        Si l'élève a posé des questions récemment, le QCM insiste davantage sur les notions
+        liées à ses préoccupations réelles plutôt que de survoler le chapitre au hasard."""
+
+        recent_questions = [
+            turn.get("content", "").strip()
+            for turn in (history or [])
+            if turn.get("role") == "user" and turn.get("content", "").strip()
+        ][-6:]
+
+        if recent_questions:
+            context_block = (
+                "L'élève a récemment posé ces questions dans sa conversation (ordre chronologique) :\n"
+                + "\n".join(f'- « {q} »' for q in recent_questions) +
+                "\n\nCONSIGNE IMPORTANTE : fais porter une bonne partie des 8 questions sur les notions "
+                "concrètement en jeu dans ces questions (ses préoccupations réelles), pas seulement sur "
+                "un survol générique du chapitre. Complète avec d'autres notions du chapitre pour rester complet."
+            )
+        else:
+            context_block = "L'élève n'a pas encore posé de question précise : couvre le chapitre de façon équilibrée."
+
+        system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
+Tu prépares un QCM diagnostique de remédiation pour un élève de {class_level} sur le chapitre « {chapter} », \
+AVANT qu'il ne continue le programme.
+
+{context_block}
+
+CONTRAINTES :
+- Fournis EXACTEMENT 8 questions à choix multiples, couvrant les différentes notions du chapitre \
+(pas seulement la première partie), de la plus basique à la plus avancée.
+- Chaque question a EXACTEMENT 4 choix, une seule bonne réponse.
+- Chaque question porte sur une "notion" précise et courte (2-5 mots, ex: "Addition de fractions", \
+"Réciproque du théorème de Pythagore") qui servira à dire à l'élève quoi réviser s'il se trompe.
+- Pour chaque question, donne une "explication" courte de la bonne réponse, et un "conseil" de révision \
+utile UNIQUEMENT si l'élève se trompe (rappelle si besoin une notion de niveau inférieur nécessaire pour \
+comprendre celle-ci).
+- Contexte réaliste et local burkinabè quand c'est pertinent.
+- N'utilise AUCUN emoji.
+
+FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code) :
+{{"questions": [{{"notion": "...", "question": "...", "choix": ["...", "...", "...", "..."], \
+"reponse_correcte_index": 0, "explication": "...", "conseil": "..."}}, ...]}}
+"""
+
+        user_message = f"Prépare le QCM de remédiation sur « {chapter} » pour un élève de {class_level}."
+
+        response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}],
+                                      max_tokens=config.MAX_TOKENS_REMEDIATION)
+
+        if response:
+            questions = self._parse_remediation_json(response)
+            if questions:
+                return questions
+
+        print("[WARN] Claude indisponible ou reponse non structuree pour la remediation, fallback local...")
+        return self._local_remediation(class_level, chapter)
+
+    @staticmethod
+    def _parse_remediation_json(raw_text: str):
+        """Extrait et valide les 8 questions du QCM de remédiation renvoyées par Claude."""
+        text = raw_text.strip()
+        text = re.sub(r"^```(json)?", "", text.strip(), flags=re.IGNORECASE).strip()
+        text = re.sub(r"```$", "", text.strip()).strip()
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        candidate = text[start:end + 1]
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                data = json.loads(_repair_latex_json_escapes(candidate))
+            except json.JSONDecodeError:
+                return None
+
+        raw_questions = data.get("questions")
+        if not isinstance(raw_questions, list):
+            return None
+
+        questions = []
+        for item in raw_questions:
+            if not isinstance(item, dict):
+                continue
+            question = str(item.get("question", "")).strip()
+            notion = str(item.get("notion", "")).strip()
+            choix = item.get("choix")
+            correct_index = item.get("reponse_correcte_index")
+            if not question or not notion or not isinstance(choix, list) or len(choix) != 4:
+                continue
+            if not isinstance(correct_index, int) or not (0 <= correct_index < 4):
+                continue
+            questions.append({
+                "notion": notion,
+                "question": question,
+                "choix": [str(c) for c in choix],
+                "reponse_correcte_index": correct_index,
+                "explication": str(item.get("explication", "")).strip(),
+                "conseil": str(item.get("conseil", "")).strip(),
+            })
+
+        return questions or None
+
+    def _local_remediation(self, class_level: str, chapter: str) -> list:
+        """Fallback local pour le QCM de remédiation (utilisé uniquement si Claude est indisponible)."""
+        return [{
+            "notion": chapter or "Notion générale",
+            "question": f"Le service Claude est momentanément indisponible : reviens plus tard pour un vrai "
+                         f"QCM de remédiation sur « {chapter} ».",
+            "choix": ["Réessayer plus tard", "-", "-", "-"],
+            "reponse_correcte_index": 0,
+            "explication": "Ce QCM est une version de secours, pas un vrai diagnostic.",
+            "conseil": "",
+        }]
+
+    # ========================================================================
+    # ACCUEIL PERSONNALISÉ (élève connecté avec de l'historique)
+    # ========================================================================
+
+    def generate_welcome_message(self, username: str, weak_notions: list, struggles: list, topics: list) -> str:
+        """Message d'accueil personnalisé pour un élève connecté ayant déjà de l'historique :
+        mentionne 1-2 lacunes concrètes (notions ratées en remédiation, notions simplifiées)
+        et suggère une action précise pour la prochaine session."""
+
+        weak_text = "\n".join(
+            f"- « {n['notion']} » (chapitre {n['chapter']}, {n['class_level']}) ratée {n['wrong_count']} fois en remédiation"
+            for n in weak_notions
+        ) or "Aucune lacune identifiée en remédiation pour l'instant."
+
+        struggles_text = "\n".join(
+            f"- A demandé une explication simplifiée sur « {s['question']} » (chapitre {s['chapter']}, {s['class_level']})"
+            for s in struggles
+        ) or "Aucune demande de simplification récente."
+
+        topics_text = "\n".join(
+            f"- {t['chapter']} ({t['class_level']}), {t['visits']} session(s)"
+            for t in topics
+        ) or "Aucun chapitre travaillé pour l'instant."
+
+        system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
+Un élève nommé {username} vient de se connecter à l'application. Tu as accès à son historique \
+récent. Rédige un court message d'accueil personnalisé (3 à 5 phrases, en Markdown léger) qui :
+- Le salue par son prénom/pseudo de façon chaleureuse.
+- Mentionne de façon concrète 1 ou 2 lacunes réelles tirées de son historique ci-dessous (pas de généralités).
+- Termine par UNE suggestion précise et actionnable pour cette session (ex: reprendre tel chapitre, \
+refaire un QCM de remédiation sur telle notion).
+- Si l'historique ne montre AUCUNE lacune claire, félicite-le pour sa progression et propose \
+d'avancer sur un nouveau chapitre plutôt que d'inventer un problème.
+
+HISTORIQUE DE L'ÉLÈVE :
+Notions ratées en remédiation :
+{weak_text}
+
+Notions ayant nécessité une simplification :
+{struggles_text}
+
+Chapitres travaillés récemment :
+{topics_text}
+
+{NO_EMOJI_INSTRUCTIONS}
+Ne mets pas de titre Markdown (##), juste le message directement, comme si tu parlais à l'élève."""
+
+        response = self._call_claude(system_prompt, [{"role": "user", "content": "Rédige le message d'accueil."}],
+                                      max_tokens=500)
+        if response:
+            return response
+
+        return self._local_welcome_message(username, weak_notions)
+
+    @staticmethod
+    def _local_welcome_message(username: str, weak_notions: list) -> str:
+        """Fallback local pour l'accueil personnalisé (Claude indisponible)."""
+        if weak_notions:
+            notion = weak_notions[0]
+            return (
+                f"Content de te revoir, {username}. La dernière fois, « {notion['notion']} » "
+                f"({notion['chapter']}) t'a donné du fil à retordre : ce serait une bonne idée d'y "
+                f"revenir avant de continuer.\n\n"
+                f"*(Le service Claude est momentanément indisponible, ceci est une version de secours.)*"
+            )
+        return (
+            f"Content de te revoir, {username} ! Prêt à continuer là où tu t'es arrêté ?\n\n"
+            f"*(Le service Claude est momentanément indisponible, ceci est une version de secours.)*"
+        )
+
+    def _local_basics(self, class_level: str, chapter: str) -> str:
+        """Fallback local pour la fiche 'Pour bien démarrer' (Claude indisponible)."""
+        chapter_lower = chapter.lower()
+        question_stub = f"les bases de {chapter}" if chapter else "les mathématiques"
+        knowledge = self._get_knowledge(chapter_lower, "", question_stub, class_level, chapter) if chapter else None
+
+        intro = (
+            f'Voici de quoi bien démarrer le chapitre "{chapter}"' + (f" en {class_level}." if class_level else ".")
+            if chapter else
+            "Voici quelques bases générales pour bien démarrer en mathématiques."
+        )
+
+        base = f"""
+## Pour bien démarrer
+
+{intro}
+
+**Méthode générale :**
+1. Relis les définitions et le vocabulaire du chapitre avant de commencer.
+2. Repère les formules essentielles et recopie-les sur une fiche.
+3. Fais d'abord un exercice simple d'application directe.
+4. Vérifie toujours ton résultat (ordre de grandeur, unité, sens).
+
+*(Le service Claude est momentanément indisponible, ceci est une version de secours.)*
+"""
+        if knowledge:
+            return knowledge + "\n" + base
+        return base
+
+    # ========================================================================
+    # RÉSUMÉ (session ou chapitre)
+    # ========================================================================
+
+    def generate_summary(self, history: list, class_level: str = "", chapter: str = "") -> str:
+        """Résume soit la conversation en cours (si elle existe), soit les points essentiels
+        du chapitre choisi (si aucune conversation n'a encore eu lieu)."""
+
+        real_turns = [t for t in (history or []) if t.get("role") in ("user", "assistant") and t.get("content")]
+
+        if real_turns:
+            return self._summarize_session(real_turns, class_level, chapter)
+        if chapter:
+            return self._summarize_chapter(class_level, chapter)
+        return (
+            "Il n'y a encore rien à résumer : pose une question ou choisis un chapitre, "
+            "et je pourrai t'en donner les points essentiels."
+        )
+
+    def _summarize_session(self, turns: list, class_level: str, chapter: str) -> str:
+        convo_text = "\n".join(
+            f"{'Élève' if t['role'] == 'user' else 'Prof Amira'} : {t['content']}" for t in turns
+        )
+
+        system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
+On te donne une conversation entre toi et un élève. Résume cette séance pour l'élève.
+
+FORMAT DE SORTIE — Markdown structuré avec exactement ces sections :
+## Points essentiels vus dans cette séance
+## Formules et méthodes à retenir
+## Ce qu'il reste à travailler
 
 RÈGLES :
-- Contexte réaliste du Burkina Faso (marché, agriculture, élevage, construction, tissage...)
-- Adapté au niveau de la classe
-- Inclus ÉNONCÉ + SOLUTION DÉTAILLÉE étape par étape
-- Encourage l'élève à essayer par lui-même
-- Termine par la réponse finale claire
-- Format Markdown"""
+- Sois synthétique : listes à puces courtes, pas de blabla, pas de répétition mot à mot des réponses.
+- Formules en LaTeX (`$...$` ou `$$...$$`) si nécessaire.
+- Ton encourageant.
 
-        user_message = f"""Classe: {class_level}
-Chapitre: {chapter}
+{NO_EMOJI_INSTRUCTIONS}"""
 
-Génère un exercice original et intéressant sur ce chapitre pour cette classe:"""
-        
-        response = self._call_claude(system_prompt, user_message, max_tokens=1200)
+        user_message = (
+            f"Classe : {class_level or 'non précisée'}\n"
+            f"Chapitre : {chapter or 'non précisé'}\n\n"
+            f"Conversation à résumer :\n{convo_text[:6000]}\n\n"
+            "Rédige le résumé de cette séance."
+        )
+
+        response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}],
+                                      max_tokens=config.MAX_TOKENS_SUMMARY)
         if response:
-            return {
-                "exercise": response,
-                "chapter": chapter,
-                "class_level": class_level
-            }
-        
-        # Fallback local
-        print("⚠️ Claude indisponible pour l'exercice, utilisation du fallback...")
-        return self._local_generate_exercise(class_level, chapter)
+            return response
+
+        return self._local_summarize_session(turns)
+
+    def _summarize_chapter(self, class_level: str, chapter: str) -> str:
+        system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
+Un élève de {class_level or 'Burkina Faso'} n'a pas encore posé de question, mais veut un résumé \
+des points essentiels du chapitre « {chapter} » avant de commencer à réviser ou s'entraîner.
+
+FORMAT DE SORTIE — Markdown structuré avec exactement ces sections :
+## Points essentiels du chapitre
+## Formules à connaître par cœur
+## Ce qu'on attend de toi à l'examen
+
+RÈGLES :
+- Sois synthétique : listes à puces courtes.
+- Formules en LaTeX (`$...$` ou `$$...$$`) si nécessaire.
+- Ton encourageant.
+
+{NO_EMOJI_INSTRUCTIONS}"""
+
+        user_message = f"Classe : {class_level or 'non précisée'}\nChapitre : {chapter}\n\nRédige ce résumé."
+
+        response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}],
+                                      max_tokens=config.MAX_TOKENS_SUMMARY)
+        if response:
+            return response
+
+        return self._local_basics(class_level, chapter)
+
+    @staticmethod
+    def _local_summarize_session(turns: list) -> str:
+        """Fallback local : liste simplement les questions posées par l'élève (Claude indisponible)."""
+        questions = [t["content"] for t in turns if t["role"] == "user"]
+        if not questions:
+            return "Pas encore assez d'échanges pour faire un résumé."
+
+        points = "\n".join(f"- {q}" for q in questions[-8:])
+        return f"""
+## Résumé de la séance
+
+**Questions abordées :**
+{points}
+
+*Relis les réponses ci-dessus pour retrouver le détail de chaque explication.*
+
+*(Le service Claude est momentanément indisponible, ceci est une version de secours.)*
+"""
+
+    # ========================================================================
+    # GÉNÉRATION D'EXERCICES (structurés : énoncé / indices / solution)
+    # ========================================================================
+
+    @staticmethod
+    def _recent_user_questions(history: list, limit: int = 4) -> list:
+        """Dernières questions posées par l'élève dans la conversation (les plus utiles pour
+        deviner un chapitre ou un niveau de difficulté implicites)."""
+        if not history:
+            return []
+        return [t.get("content", "").strip() for t in history if t.get("role") == "user" and t.get("content")][-limit:]
+
+    def _default_chapter(self, class_level: str) -> str:
+        """Chapitre de repli quand aucun n'est précisé et que Claude n'en a pas proposé
+        (ex: mode local sans API) : le premier chapitre du programme officiel de la classe."""
+        chapters = CURRICULUM.get(class_level, {}).get("chapters", [])
+        return chapters[0] if chapters else "Notions générales"
+
+    @staticmethod
+    def _infer_difficulty(history: list) -> int:
+        """Estime un niveau de difficulté (1-4) quand l'élève n'a pas choisi lui-même, à partir
+        de la sophistication de ses dernières questions. Défaut : 2 (application guidée)."""
+        recent = RAGSystem._recent_user_questions(history)
+        if not recent:
+            return 2
+        text = " ".join(recent).lower()
+        advanced_markers = [
+            "démontre", "démontrer", "démonstration", "justifie", "justifier", "prouve", "prouver",
+            "étudier les variations", "étudie les variations", "dérivée", "dérivées", "primitive",
+            "intégrale", "limite", "récurrence", "produit scalaire", "loi binomiale", "second degré",
+            "logarithme", "exponentielle", "asymptote", "continuité",
+        ]
+        basic_markers = [
+            "c'est quoi", "qu'est-ce que", "comment on fait", "définition", "exemple simple",
+            "je ne comprends pas", "je comprends pas", "explique-moi", "explique moi",
+        ]
+        if any(marker in text for marker in advanced_markers):
+            return 3
+        if any(marker in text for marker in basic_markers):
+            return 1
+        return 2
+
+    def generate_exercise(self, class_level, chapter, difficulty: int = None, history: list = None):
+        """Génère un exercice structuré via Claude. Niveau 1★ : série de mini-questions QCM
+        d'application directe. Niveaux 2-4★ : exercice ouvert (énoncé/indice/solution), la
+        difficulté croissant jusqu'à une situation d'intégration en 4★.
+
+        Le chapitre et la difficulté sont tous deux facultatifs : si l'élève ne les précise pas,
+        Claude choisit lui-même un chapitre pertinent (à partir des dernières questions posées, ou
+        un chapitre de base du programme sinon) et la difficulté est déduite du niveau apparent des
+        questions récentes (moyenne par défaut)."""
+
+        difficulty = difficulty if difficulty in (1, 2, 3, 4) else self._infer_difficulty(history)
+        difficulty_label = STAR_DIFFICULTY_LABELS[difficulty]
+
+        auto_chapter = not chapter
+        chapter_txt = chapter if chapter else "à choisir toi-même (voir consigne ci-dessous)"
+
+        # Ancrage dans les documents fournis : priorité absolue à la matière déposée par l'équipe
+        # pédagogique. Quand le chapitre est connu, le filtre doit être EXACT (pas le repli
+        # classe-seule de self.query(), pensé pour le chat) : sinon, dès qu'aucun document ne
+        # correspond vraiment, on récupérerait quand même des extraits d'un AUTRE chapitre de la
+        # même classe et on croirait à tort avoir une source — l'exercice partirait alors sur un
+        # sujet hors-programme sans jamais activer le repli recherche internet/génération libre.
+        context_nodes = []
+        try:
+            if chapter:
+                context_nodes = self._retrieve_with_filters(
+                    chapter,
+                    [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
+                    top_k=4,
+                )
+            else:
+                recent = self._recent_user_questions(history, limit=1)
+                if recent:
+                    context_nodes = self.query(recent[0], class_level=class_level, top_k=4)
+        except Exception as e:
+            print(f"[WARN] Recherche de contexte pour l'exercice echouee: {e}")
+
+        web_search_tools = None
+        if context_nodes:
+            document_excerpts = "\n---\n".join(n.get_content()[:800] for n in context_nodes)
+            context_instructions = f"""
+DOCUMENTS DE COURS FOURNIS — base l'exercice EN PRIORITÉ sur ces extraits (mêmes notions, mêmes \
+notations, même niveau de raisonnement) ; adapte les valeurs numériques et la mise en situation \
+pour que l'exercice reste ORIGINAL plutôt qu'un copier-coller :
+{document_excerpts}
+"""
+        else:
+            context_instructions = """
+Aucun document de cours fourni ne correspond à ce chapitre. Un outil de recherche internet est à \
+ta disposition : utilise-le si une source fiable et récente (programme burkinabè de préférence) \
+améliorerait la pertinence de l'exercice, sinon génère-le à partir de tes connaissances générales.
+"""
+            web_search_tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}]
+
+        chapter_instructions = ""
+        if auto_chapter:
+            chapters_catalog = CURRICULUM.get(class_level, {}).get("chapters", [])
+            catalog_txt = "\n".join(f"- {c}" for c in chapters_catalog) if chapters_catalog else "(programme non précisé)"
+            recent_questions = self._recent_user_questions(history)
+            history_txt = "\n".join(f"- {q}" for q in recent_questions) if recent_questions \
+                else "(l'élève n'a pas encore posé de question)"
+            chapter_instructions = f"""
+L'ÉLÈVE N'A PAS CHOISI DE CHAPITRE — choisis-en un toi-même, en respectant cette règle :
+- Si les dernières questions de l'élève ci-dessous pointent clairement vers un chapitre du programme, choisis-le.
+- Sinon, choisis un chapitre de base adapté au niveau {class_level} (une notion fondamentale et incontournable).
+
+Programme officiel de {class_level} :
+{catalog_txt}
+
+Dernières questions posées par l'élève :
+{history_txt}
+
+Indique EXACTEMENT l'intitulé retenu (repris tel quel dans la liste ci-dessus) dans le champ "chapitre" du JSON.
+"""
+
+        if difficulty == 1:
+            system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
+Tu génères une série de mini-questions à choix multiples ORIGINALES pour un élève de {class_level} sur le \
+chapitre « {chapter_txt} », en application DIRECTE du cours (restitution immédiate, pas de raisonnement à \
+plusieurs étapes).
+{chapter_instructions}
+{context_instructions}
+CONTRAINTES :
+- Fournis entre 3 et 4 mini-questions QCM, chacune sur une notion de base différente du chapitre.
+- Chaque question a EXACTEMENT 4 choix, une seule bonne réponse.
+- Contexte réaliste et local burkinabè quand c'est pertinent (marché, agriculture, élevage...).
+- Une courte "explication" accompagne chaque question (pourquoi cette réponse est la bonne).
+- N'utilise AUCUN emoji.
+
+FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code) :
+{{"chapitre": "{chapter if chapter else '...'}", "enonce": "phrase d'introduction courte", "qcm": [{{"question": "...", \
+"choix": ["...", "...", "...", "..."], "reponse_correcte_index": 0, "explication": "..."}}, ...]}}
+"""
+        else:
+            system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
+Tu génères un exercice d'entraînement ORIGINAL pour un élève de {class_level} sur le chapitre « {chapter_txt} ».
+{chapter_instructions}
+{context_instructions}
+CONTRAINTES :
+- Niveau de difficulté : {difficulty_label}
+- Contexte réaliste et local burkinabè (marché, agriculture, élevage, artisanat, construction, transport en commun...)
+- Fournis exactement 1 indice qui guide SANS donner le résultat.
+- La solution doit être détaillée étape par étape, avec les formules en LaTeX (`$...$` ou `$$...$$`) : tout symbole \
+mathématique (∞, ∈, ≤, →...) en LaTeX (`\\infty`, `\\in`...), jamais épelé en toutes lettres (écris $+\\infty$, \
+jamais « + infini »).
+- Mets la réponse finale bien en évidence, séparément.
+- OBLIGATOIRE si l'exercice implique une figure géométrique, même indirectement (triangle, champ/terrain rectangulaire, \
+cercle, angle, repère, configuration de Thalès/Pythagore, solide...) : remplis le champ "figure" avec le schéma \
+correspondant. Sinon mets "figure" à null. N'essaie JAMAIS de représenter une figure avec des caractères ASCII \
+(`|`, `/`, `\\`, `-`) dans "enonce" ou "solution" : uniquement le champ "figure" prévu à cet effet.
+- N'utilise AUCUN emoji dans "enonce", "indices", "solution" ou "reponse_finale" : uniquement du texte et du \
+Markdown/LaTeX standard (**gras**, `$...$`).
+
+FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code), \
+exactement sous cette forme :
+{{"chapitre": "{chapter if chapter else '...'}", "enonce": "...", "indices": ["..."], "solution": "...", \
+"reponse_finale": "...", "figure": null}}
+
+Si présente, la "figure" doit être un OBJET JSON (pas une chaîne de caractères échappée) suivant exactement ce schéma :
+{{"points": [{{"id": "A", "x": 0, "y": 0}}, ...], "segments": [{{"from": "A", "to": "B"}}, ...], \
+"angles": [{{"vertex": "A", "from": "B", "to": "C", "right": true}}], "polygons": [{{"points": ["A","B","C"], "fill": true}}], \
+"circles": [{{"center": "A", "radius": 2}}], "labels": [{{"text": "3 cm", "x": 0, "y": 1.5}}]}}
+Coordonnées en unités abstraites, "right": true pour un angle droit plutôt qu'une valeur en degrés. Chaque point \
+est déjà étiqueté automatiquement avec son "id" : n'ajoute JAMAIS ce même nom dans "labels" (qui sert uniquement \
+aux annotations comme une longueur de côté). Décale légèrement chaque "label" à l'écart du trait ou de la forme \
+qu'il annote (jamais pile sur un segment ni à l'intérieur d'un polygone rempli) pour qu'il ne se superpose pas au dessin.
+"""
+
+        user_message = (
+            f"Génère un exercice original et motivant sur « {chapter} » pour un élève de {class_level}."
+            if chapter else
+            f"Génère un exercice original et motivant pour un élève de {class_level} : choisis toi-même le "
+            "chapitre le plus adapté, en suivant la consigne du système."
+        )
+
+        response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}],
+                                      max_tokens=config.MAX_TOKENS_EXERCISE, tools=web_search_tools)
+
+        if response:
+            parsed, claude_chapter = self._parse_exercise_json(response, difficulty)
+            if parsed:
+                parsed["chapter"] = chapter or claude_chapter or self._default_chapter(class_level)
+                parsed["class_level"] = class_level
+                parsed["difficulty"] = difficulty
+                return parsed
+            print(f"[WARN] JSON exercice non parsable meme apres reparation ({len(response)} caracteres) : "
+                  f"debut={response[:150]!r} fin={response[-150:]!r}")
+        else:
+            print("[WARN] _call_claude a renvoye une reponse vide pour l'exercice.")
+
+        print("[WARN] Claude indisponible ou reponse non structuree pour l'exercice, fallback local...")
+        return self._local_generate_exercise(class_level, chapter or self._default_chapter(class_level), difficulty)
+
+    @staticmethod
+    def _parse_exercise_json(raw_text: str, difficulty: int = 2):
+        """Extrait et valide le JSON d'exercice renvoyé par Claude : forme QCM (liste `qcm`) en 1★,
+        forme ouverte (`solution`/`indices`) en 2-4★. Tolère les fences markdown.
+        Retourne un tuple (exercice, chapitre_choisi_par_claude) — le second élément n'est utile
+        que lorsque l'élève n'avait pas précisé de chapitre lui-même."""
+        text = raw_text.strip()
+        text = re.sub(r"^```(json)?", "", text.strip(), flags=re.IGNORECASE).strip()
+        text = re.sub(r"```$", "", text.strip()).strip()
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None, None
+
+        candidate = text[start:end + 1]
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            # Échappement LaTeX cassé : ça arrive surtout dans le morceau "continué" d'une réponse
+            # tronquée (voir _call_claude) — le modèle recommence alors à écrire \vec, \frac...
+            # en JSON à échappement unique au lieu du double backslash JSON attendu (\\vec).
+            # On tente une réparation ciblée avant d'abandonner.
+            try:
+                data = json.loads(_repair_latex_json_escapes(candidate))
+            except json.JSONDecodeError:
+                return None, None
+
+        enonce = str(data.get("enonce", "")).strip()
+        if not enonce:
+            return None, None
+
+        claude_chapter = str(data.get("chapitre", "")).strip()
+
+        if difficulty == 1:
+            raw_qcm = data.get("qcm")
+            if not isinstance(raw_qcm, list):
+                return None, None
+            qcm = []
+            for item in raw_qcm:
+                if not isinstance(item, dict):
+                    continue
+                question = str(item.get("question", "")).strip()
+                choix = item.get("choix")
+                correct_index = item.get("reponse_correcte_index")
+                if not question or not isinstance(choix, list) or len(choix) != 4:
+                    continue
+                if not isinstance(correct_index, int) or not (0 <= correct_index < 4):
+                    continue
+                qcm.append({
+                    "question": question,
+                    "choix": [str(c) for c in choix],
+                    "reponse_correcte_index": correct_index,
+                    "explication": str(item.get("explication", "")).strip(),
+                })
+            if not qcm:
+                return None, None
+            return {"enonce": enonce, "indices": [], "solution": "", "reponse_finale": "", "figure": None,
+                    "qcm": qcm}, claude_chapter
+
+        solution = str(data.get("solution", "")).strip()
+        if not solution:
+            return None, None
+
+        indices = data.get("indices", [])
+        if not isinstance(indices, list):
+            indices = [str(indices)]
+
+        figure = data.get("figure")
+        if not isinstance(figure, dict) or not isinstance(figure.get("points"), list) or not figure.get("points"):
+            figure = None
+
+        return {
+            "enonce": enonce,
+            "indices": [str(i) for i in indices][:1],
+            "solution": solution,
+            "reponse_finale": str(data.get("reponse_finale", "")).strip(),
+            "figure": figure,
+            "qcm": None
+        }, claude_chapter
 
     # ========================================================================
     # FALLBACKS LOCAUX (quand Claude est indisponible)
     # ========================================================================
-    
+
     def _generate_local_response(self, question, class_level, chapter, context):
-        """Fallback local pour les réponses."""
-        # Détection du thème
+        """Fallback local pour les réponses (utilisé uniquement si Claude est indisponible)."""
         chapter_lower = chapter.lower()
         question_lower = question.lower()
-        
+
         knowledge = self._get_knowledge(chapter_lower, question_lower, question, class_level, chapter)
-        
+
         if knowledge:
             if context and context != "Aucun document spécifique disponible pour ce chapitre.":
                 knowledge += f"\n\n**Extrait des documents :**\n{context[:500]}"
             return knowledge
-        
-        # Réponse générique
+
         if context and context != "Aucun document spécifique disponible pour ce chapitre.":
             return f"""
 **Question :** {question}
@@ -337,21 +1189,27 @@ Voici les informations disponibles sur le chapitre "{chapter}" de {class_level}.
 
 *Conseil : Pour approfondir, consulte ton manuel ou demande à ton professeur.*
 """
+        intro = (
+            f'Le chapitre "{chapter}" fait partie du programme de {class_level} au Burkina Faso.'
+            if class_level or chapter else
+            "Voici ce que je peux te dire pour l'instant."
+        )
         return f"""
 **Question :** {question}
 
-Le chapitre "{chapter}" fait partie du programme de {class_level} au Burkina Faso.
+{intro}
 
 **Pour t'aider :**
 1. Relis les définitions dans ton cours
 2. Fais des exercices d'application simples
 3. Augmente progressivement la difficulté
 
-*Je peux te donner des explications plus précises si tu reformules ta question.*
+*Je peux te donner des explications plus précises si tu reformules ta question, ou réessaie dans un instant \
+(le service Claude est momentanément indisponible).*
 """
-    
+
     def _get_knowledge(self, chapter_lower, question_lower, question, class_level, chapter):
-        """Retourne le contenu de connaissance si le thème est détecté."""
+        """Retourne le contenu de connaissance si le thème est détecté (secours hors-ligne uniquement)."""
         knowledge_base = {
             "pythagore": f"""
 **Question :** {question}
@@ -360,7 +1218,7 @@ Le **théorème de Pythagore** est une propriété fondamentale des triangles re
 
 **Énoncé :** Dans un triangle rectangle, le carré de l'hypoténuse est égal à la somme des carrés des deux autres côtés.
 
-**Formule :** Si ABC est rectangle en A, alors BC² = AB² + AC²
+**Formule :** Si ABC est rectangle en A, alors $BC^2 = AB^2 + AC^2$
 - BC = hypoténuse (côté le plus long)
 - AB et AC = cathètes (côtés de l'angle droit)
 
@@ -375,428 +1233,180 @@ Le **théorème de Thalès** permet de calculer des longueurs avec des parallèl
 
 **Énoncé :** Si deux droites parallèles coupent deux sécantes, alors les segments sont proportionnels.
 
-**Formule :** AD/AB = AE/AC = DE/BC
+**Formule :** $\\dfrac{{AD}}{{AB}} = \\dfrac{{AE}}{{AC}} = \\dfrac{{DE}}{{BC}}$
 
 **Exemple :** Si AD=2cm, AB=6cm, DE=3cm → BC = (6×3)/2 = 9cm
 """,
             "fraction": f"""
 **Question :** {question}
 
-Une **fraction** a/b : a = numérateur, b = dénominateur.
+Une **fraction** $\\dfrac{{a}}{{b}}$ : a = numérateur, b = dénominateur.
 
 **Opérations :**
-- Addition : a/b + c/b = (a+c)/b
-- Multiplication : (a/b) × (c/d) = (a×c)/(b×d)
-- Division : (a/b) ÷ (c/d) = (a×d)/(b×c)
+- Addition : $\\dfrac{{a}}{{b}} + \\dfrac{{c}}{{b}} = \\dfrac{{a+c}}{{b}}$
+- Multiplication : $\\dfrac{{a}}{{b}} \\times \\dfrac{{c}}{{d}} = \\dfrac{{a \\times c}}{{b \\times d}}$
+- Division : $\\dfrac{{a}}{{b}} \\div \\dfrac{{c}}{{d}} = \\dfrac{{a \\times d}}{{b \\times c}}$
 
 **Simplification :** Divise numérateur et dénominateur par leur PGCD.
 """,
             "équation": f"""
 **Question :** {question}
 
-**Équation du 1er degré :** ax + b = 0
+**Équation du 1er degré :** $ax + b = 0$
 
 **Résolution :** 1) Isoler x → 2) Diviser
 
-**Exemple :** 3x + 7 = 22 → 3x = 15 → x = 5
+**Exemple :** $3x + 7 = 22 \\Rightarrow 3x = 15 \\Rightarrow x = 5$
 
-**Vérification :** 3×5 + 7 = 22 ✅
+**Vérification :** $3\\times5 + 7 = 22$
 """,
             "trigonométrie": f"""
 **Question :** {question}
 
 **SOH-CAH-TOA :**
-- sin(Â) = opposé/hypoténuse
-- cos(Â) = adjacent/hypoténuse
-- tan(Â) = opposé/adjacent
+- $\\sin(\\hat{{A}}) = \\dfrac{{\\text{{opposé}}}}{{\\text{{hypoténuse}}}}$
+- $\\cos(\\hat{{A}}) = \\dfrac{{\\text{{adjacent}}}}{{\\text{{hypoténuse}}}}$
+- $\\tan(\\hat{{A}}) = \\dfrac{{\\text{{opposé}}}}{{\\text{{adjacent}}}}$
 
-**Exemple :** cos(60°) = 0,5 ; sin(30°) = 0,5
+**Exemple :** $\\cos(60°) = 0{{,}}5$ ; $\\sin(30°) = 0{{,}}5$
 """,
-            "sphère": f"""
-**Question :** {question}
-
-**Formules :**
-- Aire de la sphère : A = 4πR²
-- Volume de la boule : V = (4/3)πR³
-
-**Exemple :** Pour R = 3 cm : Volume = 36π ≈ 113 cm³
-""",
-            "fonction": f"""
-**Question :** {question}
-
-Fonction f : x → f(x). **Affine :** f(x) = ax + b
-
-**Exemple :** f(x) = 2x + 3 → f(1) = 5, f(-2) = -1
-""",
-            "dériv": f"""
-**Question :** {question}
-
-**Dérivée :** (xⁿ)' = n × xⁿ⁻¹
-
-**Exemple :** f(x)=3x²+2x-5 → f'(x)=6x+2
-
-**Interprétation :** f'(a) = pente de la tangente en x=a
-""",
-            "statistique": f"""
-**Question :** {question}
-
-**Moyenne =** somme/effectif
-**Médiane =** valeur centrale
-**Étendue =** max - min
-
-**Exemple :** {2,5,5,7,9} → moyenne=5,6 médiane=5
-""",
-            "probabilité": f"""
-**Question :** {question}
-
-**P =** cas favorables / cas possibles
-
-**Propriétés :** 0 ≤ P ≤ 1
-
-**Exemple :** P(6 avec un dé) = 1/6 ≈ 0,167
-""",
-            "suite": f"""
-**Question :** {question}
-
-**Arithmétique :** uₙ = u₁ + (n-1)r (on ajoute r)
-**Géométrique :** uₙ = u₁ × qⁿ⁻¹ (on multiplie par q)
-""",
-            "vecteur": f"""
-**Question :** {question}
-
-**AB→ = (xB-xA, yB-yA)**
-**Addition :** AB→ + BC→ = AC→ (Chasles)
-""",
-            "racine": f"""
-**Question :** {question}
-
-√a = b si b² = a
-
-**Exemple :** √25 = 5, √144 = 12
-
-**Propriétés :** √(a×b) = √a × √b
-""",
-            "identité": f"""
-**Question :** {question}
-
-1. (a+b)² = a²+2ab+b²
-2. (a-b)² = a²-2ab+b²
-3. (a+b)(a-b) = a²-b²
-""",
-            "second degré": f"""
-**Question :** {question}
-
-**Δ = b²-4ac**
-- Δ>0 : 2 solutions x = (-b±√Δ)/(2a)
-- Δ=0 : 1 solution x = -b/(2a)
-- Δ<0 : pas de solution
-""",
-            "exponentielle": f"""
-**Question :** {question}
-
-**eˣ :** e⁰=1, eˣ>0
-**(eˣ)' = eˣ**
-**ln(x) :** ln(eˣ)=x, e^(ln x)=x
-""",
-            "intégration": f"""
-**Question :** {question}
-
-**∫ f(x) dx** de a à b = aire sous la courbe
-
-Si F'(x)=f(x), alors ∫f(x)dx = F(b)-F(a)
-""",
-            "complexe": f"""
-**Question :** {question}
-
-z = a+ib (i²=-1)
-|z| = √(a²+b²) = module
-""",
-            "limite": f"""
-**Question :** {question}
-
-lim 1/x (x→∞) = 0
-lim x² (x→∞) = ∞
-Asymptote : droite approchée par la courbe
-"""
         }
-        
+
         for key, value in knowledge_base.items():
             if key in chapter_lower or key in question_lower:
                 return value
         return None
 
     def _local_simplify(self, question: str, original_answer: str, class_level: str) -> str:
-        """Fallback simplification locale."""
-        answer_lower = original_answer.lower()
-        
-        simplifications = {
-            "pythagore": f"""
-👋 **Je te résume simplement :**
-
-Le théorème de Pythagore dit que dans un triangle rectangle, le côté le plus long au carré est égal à la somme des carrés des deux autres côtés.
-
-**Formule :** BC² = AB² + AC²
-
-**Exemple :** Si les petits côtés font 3 et 4 cm, le grand fait 5 cm (3²+4²=25, √25=5)
-
-**À retenir :** On l'utilise pour calculer un côté quand on connaît les deux autres.
-""",
-            "thalès": f"""
-👋 **Je te résume simplement :**
-
-Le théorème de Thalès sert à calculer des longueurs quand on a des parallèles.
-
-**Principe :** Les segments sont proportionnels.
-
-**Formule :** AD/AB = AE/AC = DE/BC
-
-**À retenir :** Cherche des droites parallèles et pose les rapports égaux.
-""",
-            "fraction": f"""
-👋 **Je te résume simplement :**
-
-Une fraction a/b = a parts sur b parts.
-
-**Pour additionner :** Il faut le même dénominateur en bas.
-Ex : 1/4 + 2/4 = 3/4 (on ajoute seulement les chiffres du haut)
-
-**Pour simplifier :** Divise le haut et le bas par le même nombre.
-Ex : 4/8 = 1/2
-""",
-            "équation": f"""
-👋 **Je te résume simplement :**
-
-Une équation, c'est comme une balance : égal des deux côtés.
-
-**Méthode :**
-1. Regroupe les x d'un côté
-2. Regroupe les nombres de l'autre
-3. Divise pour trouver x
-
-**Exemple :** 2x + 3 = 7 → 2x = 4 → x = 2 ✅
-""",
-            "fonction": f"""
-👋 **Je te résume simplement :**
-
-Une fonction f(x), c'est une machine : tu mets x, tu obtiens f(x).
-
-**Exemple :** f(x) = 2x + 3 → f(1) = 5, f(5) = 13
-
-**Graphiquement :** c'est une droite ou une courbe.
-""",
-            "dériv": f"""
-👋 **Je te résume simplement :**
-
-La dérivée mesure la vitesse de changement d'une fonction.
-
-**Exemples :**
-- f(x) = 3x → f'(x) = 3 (pente constante)
-- f(x) = x² → f'(x) = 2x (pente qui augmente)
-
-**Formule :** (xⁿ)' = n × xⁿ⁻¹
-"""
-        }
-        
-        for key, value in simplifications.items():
-            if key in answer_lower:
-                return value
-        
-        # Simplification générique
+        """Fallback simplification locale (utilisé uniquement si Claude est indisponible)."""
         key_points = []
         for line in original_answer.split('\n'):
             line = line.strip()
             if line and len(line) > 20 and not line.startswith('**') and not line.startswith('#'):
                 line = line.replace('**', '').replace('*', '')
                 key_points.append(line)
-        
+
         text = '\n'.join(key_points[:4]) if key_points else original_answer[:300]
         return f"""
-👋 **Pas de panique ! Je t'explique autrement :**
+**Pas de panique, voici en plus simple :**
 
 {text}
 
-**Conseil :** En {class_level}, il faut apprendre les formules par cœur et faire beaucoup d'exercices.
+**Conseil :** En {class_level}, apprends bien la formule et fais plusieurs petits exercices d'application.
+
+*(Le service Claude est momentanément indisponible, ceci est une version de secours.)*
 """
 
-    def _local_generate_exercise(self, class_level, chapter):
-        """Fallback exercice local."""
+    def _local_generate_exercise(self, class_level, chapter, difficulty: int = 2):
+        """Fallback exercice local structuré (utilisé uniquement si Claude est indisponible)."""
+        if difficulty == 1:
+            return {
+                "enonce": f"Petit test de connaissances sur « {chapter} ».",
+                "indices": [],
+                "solution": "",
+                "reponse_finale": "",
+                "figure": None,
+                "qcm": [{
+                    "question": f"Quelle affirmation correspond à une notion du chapitre « {chapter} » ?",
+                    "choix": [
+                        "Une notion vue en cours sur ce chapitre",
+                        "Une notion d'un autre chapitre",
+                        "Une affirmation fausse",
+                        "Une affirmation hors-programme",
+                    ],
+                    "reponse_correcte_index": 0,
+                    "explication": "Le service Claude est momentanément indisponible : reviens plus tard "
+                                   "pour un vrai QCM généré sur ce chapitre.",
+                }],
+                "chapter": chapter,
+                "class_level": class_level,
+                "difficulty": difficulty,
+            }
+
         chapter_lower = chapter.lower()
-        
+
         exercises = {
-            "pythagore": f"""
-**📐 Exercice - {class_level} - Théorème de Pythagore**
-
-**Énoncé :**
-Un menuisier burkinabè vérifie une planche : côtés 30 cm, 40 cm, et 50 cm.
-A-t-elle un angle droit ?
-
-**Solution :**
-1. Le plus long côté (50) est l'hypoténuse potentielle
-2. 50² = 2500 ; 30²+40² = 900+1600 = 2500
-3. 2500 = 2500 ✅
-
-**✅ Réponse :** Oui, l'angle est parfaitement droit !
-""",
-            "thalès": f"""
-**📐 Exercice - {class_level} - Théorème de Thalès**
-
-**Énoncé :**
-Au marché de Ouaga, un poteau de 3 m est à 2 m du mur.
-Un second poteau est à 6 m. Quelle est sa hauteur ?
-
-**Solution :**
-3/2 = h/6 → h = 3×6/2 = 9 m
-
-**✅ Réponse :** 9 mètres
-""",
-            "fraction": f"""
-**📝 Exercice - {class_level} - Fractions**
-
-**Énoncé :**
-Au marché, Mamadi achète 3/4 kg de riz et 2/3 kg de haricots.
-Masse totale ?
-
-**Solution :**
-3/4 + 2/3 = 9/12 + 8/12 = 17/12 ≈ 1,42 kg
-
-**✅ Réponse :** 17/12 kg
-""",
-            "équation": f"""
-**📝 Exercice - {class_level} - Équations**
-
-**Énoncé :**
-3 ananas + 500 F = 2 ananas + 1500 F. Prix d'un ananas ?
-
-**Solution :**
-3x + 500 = 2x + 1500 → x = 1000
-
-**✅ Réponse :** 1000 F CFA
-""",
-            "trigonométrie": f"""
-**📐 Exercice - {class_level} - Trigonométrie**
-
-**Énoncé :**
-Arbre avec ombre de 12 m. Soleil à 60°. Hauteur ?
-
-**Solution :**
-tan(60°) = h/12 → h = 12×1,732 ≈ 20,8 m
-
-**✅ Réponse :** ≈ 20,8 mètres
-""",
-            "puissance": f"""
-**📝 Exercice - {class_level} - Puissances**
-
-**Énoncé :**
-5 rangées de 5 arbres, chaque arbre donne 5 fruits.
-Combien de fruits ?
-
-**Solution :**
-5³ = 5×5×5 = 125 fruits
-
-**✅ Réponse :** 125 fruits
-""",
-            "fonction": f"""
-**📝 Exercice - {class_level} - Fonctions**
-
-**Énoncé :**
-Vendeur de dolo : 200 F/litre + 1000 F fixe/jour.
-Gain pour x litres ?
-
-**Solution :**
-f(x) = 200x + 1000
-
-Ex: f(5) = 2000 F, f(10) = 3000 F
-""",
-            "statistique": f"""
-**📊 Exercice - {class_level} - Statistiques**
-
-**Énoncé :**
-Notes : 12, 8, 15, 10, 14, 6, 18, 11, 13, 9
-Moyenne, médiane, étendue ?
-
-**Solution :**
-Moyenne = 116/10 = 11,6
-Médiane = 11,5
-Étendue = 12
-""",
-            "probabilité": f"""
-**🎲 Exercice - {class_level} - Probabilités**
-
-**Énoncé :**
-3 billes rouges + 5 bleues. P(rouge) ?
-
-**Solution :**
-P = 3/8 = 0,375 = 37,5%
-
-**✅ Réponse :** 37,5% de chance
-""",
-            "vecteur": f"""
-**📐 Exercice - {class_level} - Vecteurs**
-
-**Énoncé :**
-A(1,2) → B(4,6) → C(7,5). Vecteur total ?
-
-**Solution :**
-AB→=(3,4), BC→=(3,-1), AC→=(6,3)
-
-**✅ Réponse :** (6, 3)
-""",
-            "racine": f"""
-**📝 Exercice - {class_level} - Racines carrées**
-
-**Énoncé :**
-Champ carré de 144 m². Longueur du côté ?
-
-**Solution :**
-c = √144 = 12 m
-
-**✅ Réponse :** 12 mètres
-""",
-            "dériv": f"""
-**📝 Exercice - {class_level} - Dérivation**
-
-**Énoncé :**
-f(x) = 3x² + 2x - 5. Calcule f'(x).
-
-**Solution :**
-f'(x) = 6x + 2
-
-**✅ Réponse :** f'(x) = 6x + 2
-""",
-            "suite": f"""
-**📝 Exercice - {class_level} - Suites**
-
-**Énoncé :**
-50 arbres la 1ʳᵉ année, +30 chaque année.
-Arbres la 5ᵉ année ?
-
-**Solution :**
-u₅ = 50 + 4×30 = 170
-
-**✅ Réponse :** 170 arbres
-"""
+            "pythagore": {
+                "enonce": "Un menuisier burkinabè veut vérifier qu'une planche triangulaire a bien un angle droit. "
+                           "Il mesure les trois côtés : 30 cm, 40 cm et 50 cm. A-t-elle un angle droit ?",
+                "indices": [
+                    "Identifie le plus grand côté : c'est l'hypoténuse potentielle.",
+                    "Calcule le carré de l'hypoténuse et compare-le à la somme des carrés des deux autres côtés."
+                ],
+                "solution": "1) Le plus long côté (50 cm) est l'hypoténuse potentielle.\n"
+                            "2) On calcule $50^2 = 2500$ et $30^2 + 40^2 = 900 + 1600 = 2500$.\n"
+                            "3) Les deux valeurs sont égales : $2500 = 2500$.",
+                "reponse_finale": "Oui, l'angle est parfaitement droit.",
+                "figure": {
+                    "points": [{"id": "A", "x": 0, "y": 0}, {"id": "B", "x": 4, "y": 0}, {"id": "C", "x": 0, "y": 3}],
+                    "segments": [{"from": "A", "to": "B"}, {"from": "B", "to": "C"}, {"from": "C", "to": "A"}],
+                    "angles": [{"vertex": "A", "from": "B", "to": "C", "right": True}],
+                    "polygons": [{"points": ["A", "B", "C"], "fill": True}],
+                    "labels": [
+                        {"text": "40 cm", "x": 2, "y": -0.4},
+                        {"text": "30 cm", "x": -0.5, "y": 1.5},
+                        {"text": "50 cm", "x": 2.2, "y": 1.7}
+                    ]
+                }
+            },
+            "thalès": {
+                "enonce": "Au marché de Ouagadougou, un poteau de 3 m de haut projette son sommet à 2 m du mur. "
+                           "Un second poteau parallèle est à 6 m du mur. Quelle est sa hauteur ?",
+                "indices": [
+                    "Repère les deux triangles semblables formés par les poteaux et leurs distances au mur.",
+                    "Pose le rapport de proportionnalité entre les hauteurs et les distances."
+                ],
+                "solution": "On pose $\\dfrac{3}{2} = \\dfrac{h}{6}$, donc $h = \\dfrac{3 \\times 6}{2} = 9$.",
+                "reponse_finale": "9 mètres."
+            },
+            "fraction": {
+                "enonce": "Au marché, Mamadi achète $\\dfrac{3}{4}$ kg de riz et $\\dfrac{2}{3}$ kg de haricots. "
+                           "Quelle masse totale a-t-il achetée ?",
+                "indices": [
+                    "Trouve un dénominateur commun à 4 et 3.",
+                    "Convertis chaque fraction avant d'additionner les numérateurs."
+                ],
+                "solution": "$\\dfrac{3}{4} + \\dfrac{2}{3} = \\dfrac{9}{12} + \\dfrac{8}{12} = \\dfrac{17}{12} \\approx 1{,}42$ kg.",
+                "reponse_finale": "17/12 kg, soit environ 1,42 kg."
+            },
+            "équation": {
+                "enonce": "3 ananas plus 500 F CFA coûtent la même chose que 2 ananas plus 1500 F CFA. "
+                           "Quel est le prix d'un ananas ?",
+                "indices": [
+                    "Note x le prix d'un ananas et écris l'égalité entre les deux montants.",
+                    "Regroupe les termes en x d'un côté et les nombres de l'autre."
+                ],
+                "solution": "$3x + 500 = 2x + 1500 \\Rightarrow 3x - 2x = 1500 - 500 \\Rightarrow x = 1000$.",
+                "reponse_finale": "1000 F CFA."
+            },
         }
-        
+
         for key, value in exercises.items():
             if key in chapter_lower:
                 return {
-                    "exercise": value,
+                    "enonce": value["enonce"],
+                    "indices": value["indices"][:1],
+                    "solution": value["solution"],
+                    "reponse_finale": value["reponse_finale"],
+                    "figure": value.get("figure"),
+                    "qcm": None,
                     "chapter": chapter,
-                    "class_level": class_level
+                    "class_level": class_level,
+                    "difficulty": difficulty,
                 }
-        
+
+        default_solution = "Applique la méthode vue en cours, étape par étape, en vérifiant chaque calcul."
+        default_indices = ["Relis la définition principale du chapitre et repère la formule à appliquer."]
         return {
-            "exercise": f"""
-**📝 Exercice - {class_level} - {chapter}**
-
-Entraîne-toi sur le chapitre "{chapter}" :
-1. Relis ton cours
-2. Identifie les formules importantes
-3. Applique-les étape par étape
-4. Vérifie tes résultats
-
-*Tu peux aussi me poser une question précise sur ce chapitre !*
-""",
+            "enonce": f"Entraîne-toi sur le chapitre « {chapter} » : reformule un problème vu en cours avec tes "
+                      f"propres nombres, puis résous-le étape par étape.",
+            "indices": default_indices,
+            "solution": default_solution,
+            "reponse_finale": "",
+            "figure": None,
+            "qcm": None,
             "chapter": chapter,
-            "class_level": class_level
+            "class_level": class_level,
+            "difficulty": difficulty,
         }
+

@@ -60,5 +60,9 @@ data/chroma_db/*
 backend/data/chroma_db/*
 !backend/data/chroma_db/.gitkeep
 
+# Comptes élèves : base SQLite (mots de passe hashés) et secret de signature JWT
+backend/data/app.db
+backend/data/.jwt_secret
+
 # Logs
 *.log

@@ -1,267 +1,214 @@
-# Chatbot Maths Burkina Faso
+# Chat'Maths Burkina Faso 📐
 
-Assistant éducatif en mathématiques pour les élèves et enseignants du Burkina Faso, basé sur une architecture RAG (Retrieval-Augmented Generation).
+Assistant IA de mathématiques pour les élèves et enseignants du Burkina Faso, basé sur **Claude (Anthropic)** et une
+architecture **RAG** (Retrieval-Augmented Generation), de la 6ème à la Terminale.
 
-## 🎯 Objectifs
+## 🎯 Ce que fait le projet
 
-- Fournir un accompagnement en mathématiques adapté au programme burkinabè
-- Couvrir les niveaux de la 6ème à la Terminale
-- Offrir des réponses pédagogiques basées sur les supports officiels
-- Être accessible même avec une connectivité limitée
+- Répond aux questions de maths avec des explications structurées, adaptées au niveau de la classe
+- Utilise en priorité les documents officiels indexés (RAG) et complète avec les connaissances de Claude
+- Garde la mémoire de la conversation (questions/réponses précédentes) pour rester cohérent
+- Génère des exercices structurés (énoncé, indices progressifs, solution détaillée, réponse finale)
+- Reformule une réponse de façon plus simple à la demande ("Simplifie")
+- Permet de télécharger n'importe quelle réponse ou exercice en **PDF**, formules mathématiques comprises
+- Interface moderne (thème clair/sombre, animations, mise en page en blocs)
 
 ## 🏗️ Architecture
 
-### Backend (FastAPI)
-- **Framework**: FastAPI
-- **RAG System**: LlamaIndex + ChromaDB
-- **LLM**: Hugging Face Inference API (Mistral-7B) - gratuit via API
-- **Embeddings**: Sentence Transformers (paraphrase-multilingual-MiniLM-L12-v2)
-- **Base vectorielle**: ChromaDB (stockage local)
+### Backend — `backend/`
+- **Framework** : FastAPI
+- **LLM** : Claude (Anthropic API) — génération des réponses, exercices, simplifications
+- **RAG** : LlamaIndex + ChromaDB (base vectorielle locale) + embeddings HuggingFace multilingues
+- **Mémoire de conversation** : historique envoyé à chaque requête, tronqué aux N derniers échanges
+- **Repli hors-ligne** : si Claude est indisponible, un petit socle de connaissances locales prend le relais
 
-### Frontend (React + Vite)
-- **Framework**: React 18 avec Vite
-- **Styling**: TailwindCSS
-- **Math rendering**: KaTeX
-- **Icons**: Lucide React
+### Frontend — `frontend/`
+- **Framework** : React 18 + Vite
+- **UI** : TailwindCSS + daisyUI (thèmes clair/sombre), composants inspirés de shadcn/ui
+- **Animations** : Framer Motion
+- **Icônes** : lucide-react
+- **Rendu mathématique** : react-markdown + KaTeX (formules LaTeX `$...$` / `$$...$$`)
+- **Export PDF** : jsPDF + html2canvas (chargés à la demande, pas dans le bundle principal)
 
 ## 📋 Prérequis
 
-### Logiciels requis
-- Python 3.9 ou supérieur
-- Node.js 18 ou supérieur
-- Git (optionnel)
+- **Python** 3.10 – 3.12 (recommandé : évitez 3.13+ pour l'instant, certaines libs RAG ne sont pas encore compatibles)
+- **Node.js** 18 ou supérieur
+- Une **clé API Anthropic** : https://console.anthropic.com/settings/keys
 
-### Configuration Hugging Face (Optionnel mais recommandé)
-1. Créez un compte gratuit sur [Hugging Face](https://huggingface.co)
-2. Générez un token API : https://huggingface.co/settings/tokens
-3. Ajoutez le token dans le fichier `.env` (voir configuration ci-dessous)
+> ⚠️ Le LLM (Claude) est **obligatoire** pour avoir de vraies réponses de qualité. Sans clé API, l'application
+> fonctionne quand même mais ne renvoie que des réponses génériques de secours très limitées.
 
-**Note** : Le système fonctionne sans API key en utilisant le tier gratuit de Hugging Face, mais avec des limitations de rate.
+## 🚀 Installation
 
-## 🚀 Installation et Lancement
+### 1. Backend
 
-### 1. Cloner le projet
-```bash
-git clone <repository-url>
-cd chatbot-maths-burkina
-```
+Ouvrez un terminal dans VS Code (`Terminal > New Terminal`) :
 
-### 2. Configuration du Backend
-
-#### Windows (PowerShell)
-```powershell
-cd backend
-python -m venv venv
-.\venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-#### Linux/Mac
 ```bash
 cd backend
 python -m venv venv
+
+# Windows (PowerShell)
+.\venv\Scripts\Activate.ps1
+# Linux/Mac
 source venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-#### Configuration des variables d'environnement
+Copiez `.env.example` vers `.env` et renseignez votre clé :
+
 ```bash
-# Copier le fichier d'exemple
-copy .env.example .env
-
-# Éditer .env et ajouter votre clé API Hugging Face (optionnel)
-# HUGGINGFACE_API_KEY=votre_clé_ici
+copy .env.example .env      # Windows
+# cp .env.example .env      # Linux/Mac
 ```
 
-### 3. Lancer le Backend
+Éditez `backend/.env` :
 
-#### Windows (PowerShell)
-```powershell
-python main.py
+```env
+ANTHROPIC_API_KEY=sk-ant-votre-cle-ici
+ANTHROPIC_MODEL=claude-sonnet-5
 ```
 
-#### Linux/Mac
-```bash
-python main.py
-```
 
-Le backend sera accessible sur `http://localhost:8000`
 
-### 4. Configuration du Frontend
+### 2. Frontend
 
-#### Ouvrir un nouveau terminal
+Ouvrez un **second terminal** dans VS Code :
+
 ```bash
 cd frontend
 npm install
 ```
 
-### 5. Lancer le Frontend
+## ▶️ Lancer l'application
+
+**Terminal 1 — Backend** (dans `backend/`, venv activé) :
+
+```bash
+python main.py
+```
+ou, équivalent avec rechargement automatique :
+```bash
+python -m uvicorn main:app --reload
+```
+→ API disponible sur `http://127.0.0.1:8000` (documentation interactive sur `/docs`)
+
+**Terminal 2 — Frontend** (dans `frontend/`) :
 
 ```bash
 npm run dev
 ```
+→ Application disponible sur `http://localhost:5173`
 
-Le frontend sera accessible sur `http://localhost:5173`
+Ouvrez `http://localhost:5173` dans votre navigateur : c'est l'application.
 
-## 📁 Structure du Projet
+### Astuce VS Code
+
+Vous pouvez garder les deux terminaux ouverts côte à côte (icône "Split Terminal") pour voir les logs backend et
+frontend en même temps, ou utiliser les scripts fournis à la racine :
+
+```bash
+npm run install:all   # installe tout (racine + frontend + backend)
+npm run dev           # lance backend + frontend en parallèle (nécessite npm install à la racine)
+```
+
+## 📦 Dépendances clés
+
+### Backend (`backend/requirements.txt`)
+| Paquet | Rôle |
+|---|---|
+| `fastapi`, `uvicorn` | Serveur API |
+| `anthropic` | Appel au LLM Claude |
+| `llama-index`, `llama-index-embeddings-huggingface`, `llama-index-vector-stores-chroma` | Pipeline RAG |
+| `chromadb` | Base vectorielle locale persistante |
+| `sentence-transformers` | Génération des embeddings (modèle multilingue) |
+| `pypdf`, `python-docx`, `beautifulsoup4` | Extraction de texte des documents (PDF/DOCX) |
+
+### Frontend (`frontend/package.json`)
+| Paquet | Rôle |
+|---|---|
+| `tailwindcss`, `daisyui`, `@tailwindcss/typography` | Design système et thèmes |
+| `framer-motion` | Animations |
+| `lucide-react` | Icônes |
+| `react-markdown`, `remark-math`, `rehype-katex`, `katex` | Rendu Markdown + formules mathématiques |
+| `jspdf`, `html2canvas` | Export PDF des réponses (chargement différé) |
+
+## 📁 Structure du projet
 
 ```
 chatbot-maths-burkina/
 ├── backend/
-│   ├── main.py                 # API FastAPI
-│   ├── config.py               # Configuration
-│   ├── rag_system.py           # Système RAG
-│   ├── document_processor.py   # Traitement des documents
-│   ├── curriculum_data.py      # Données du programme
-│   ├── requirements.txt        # Dépendances Python
-│   ├── .env.example           # Exemple de configuration
+│   ├── main.py                 # API FastAPI (endpoints /api/*)
+│   ├── config.py                # Configuration (clé Claude, RAG, CORS...)
+│   ├── rag_system.py            # RAG + appels Claude + prompts + exercices structurés
+│   ├── document_processor.py    # Extraction de texte (PDF/DOCX/TXT)
+│   ├── curriculum_data.py       # Programme officiel (classes/chapitres)
+│   ├── requirements.txt
+│   ├── .env.example
 │   └── data/
-│       ├── documents/         # Documents PDF/DOCX/TXT
-│       └── chroma_db/         # Base vectorielle ChromaDB
+│       ├── documents/           # Vos PDF/DOCX à indexer, organisés par classe/chapitre
+│       └── chroma_db/           # Base vectorielle (générée automatiquement)
 ├── frontend/
 │   ├── src/
-│   │   ├── components/
-│   │   │   ├── ClassSelector.jsx
-│   │   │   ├── ChapterSelector.jsx
-│   │   │   └── ChatInterface.jsx
+│   │   ├── components/          # Header, Sidebar, MessageBubble, ExerciseCard, ChatInput, ui/*
+│   │   ├── lib/                 # utils.js (classnames), pdf.js (export PDF)
+│   │   ├── api.js                # Appels à l'API backend
 │   │   ├── App.jsx
-│   │   ├── main.jsx
-│   │   └── index.css
-│   ├── package.json
-│   ├── vite.config.js
-│   └── tailwind.config.js
-├── docs/
-│   └── documentation_technique.md
-└── README.md
+│   │   └── styles/main.css
+│   ├── tailwind.config.js
+│   └── package.json
+└── docs/
 ```
 
-## 📚 Ajout de Documents
+## 📚 Ajouter vos propres documents (RAG)
 
-### Via l'interface API
-```bash
-curl -X POST "http://localhost:8000/api/documents/upload" \
-  -F "file=@votre_document.pdf" \
-  -F "class_level=3ème" \
-  -F "chapter=Théorème de Thalès"
-```
+1. Placez vos fichiers PDF/DOCX/TXT dans `backend/data/documents/`
+2. Uploadez-les via l'API (ou copiez-les manuellement puis appelez `/index`) :
+   ```bash
+   curl -X POST "http://localhost:8000/api/documents/upload" \
+     -F "file=@votre_document.pdf" -F "class_level=4ème" -F "chapter=Théorème de Pythagore"
+   ```
+3. Le système les découpe en chunks, les indexe dans ChromaDB, et les utilise en priorité dans les réponses.
 
-### Formats supportés
-- PDF (.pdf)
-- Word (.docx)
-- Texte (.txt)
+## 🔧 Endpoints API principaux
 
-### Initialisation avec des documents exemples
-```bash
-curl -X POST "http://localhost:8000/api/documents/initialize-sample"
-```
-
-## 🔧 API Endpoints
-
-### GET `/api/classes`
-Retourne la liste de toutes les classes disponibles
-
-### GET `/api/classes/{class_code}/chapters`
-Retourne les chapitres pour une classe spécifique
-
-### POST `/api/chat`
-Pose une question au chatbot
-```json
-{
-  "question": "Qu'est-ce que le théorème de Pythagore ?",
-  "class_level": "4ème",
-  "chapter": "Théorème de Pythagore"
-}
-```
-
-### POST `/api/exercise`
-Génère un exercice pour un chapitre
-```json
-{
-  "class_level": "4ème",
-  "chapter": "Théorème de Pythagore"
-}
-```
-
-### POST `/api/simplify`
-Simplifie une réponse
-```json
-{
-  "answer": "réponse à simplifier",
-  "class_level": "4ème"
-}
-```
-
-## 🎨 Fonctionnalités de l'Interface
-
-- **Sélection de classe** : De la 6ème à la Terminale
-- **Sélection de chapitre** : Chapitres adaptés à chaque classe
-- **Chat interactif** : Interface de conversation intuitive
-- **Support mathématique** : Rendu des formules mathématiques avec KaTeX
-- **Simplification** : Bouton pour obtenir une explication plus simple
-- **Génération d'exercices** : Création d'exercices personnalisés
-- **Sources citées** : Affichage des sources documentaires
-- **Recherche internet** : Fallback automatique si pas de réponse dans la base
-
-## 🔒 Sécurité et Confidentialité
-
-- Aucune donnée personnelle n'est stockée de manière permanente
-- Les conversations ne sont pas conservées après la session
-- Les documents uploadés sont traités localement
-- Pas de transmission de données vers des serveurs externes (sauf recherche internet fallback)
-
-## 📊 Performance
-
-- **Temps de réponse** : < 5 secondes (objectif)
-- **Chunk size** : 700 tokens
-- **Chunk overlap** : 150 tokens
-- **Top-K retrieval** : 4 documents
+| Endpoint | Description |
+|---|---|
+| `GET /api/classes` | Liste des classes (6ème → Terminale) |
+| `GET /api/classes/{code}/chapters` | Chapitres d'une classe |
+| `POST /api/chat` | Pose une question (avec historique de conversation) |
+| `POST /api/exercise` | Génère un exercice structuré (énoncé/indices/solution/difficulté) |
+| `POST /api/simplify` | Reformule une réponse plus simplement |
+| `POST /api/documents/upload` | Ajoute un document à la base RAG |
+| `GET /api/health` | Vérifie l'état du serveur et du LLM |
 
 ## 🐛 Dépannage
 
-### Erreur de connexion Hugging Face
-- Vérifiez votre connexion internet
-- Si vous utilisez une API key, vérifiez qu'elle est correcte dans `.env`
-- Sans API key, le système utilise le tier gratuit (rate limits possibles)
+- **"Hors ligne" dans l'interface**  → vérifiez que le backend tourne bien sur le port 8000 (`http://127.0.0.1:8000/api/health`).
+- **Réponses génériques/répétitives, jamais de vraies réponses de Claude** → vérifiez que `ANTHROPIC_API_KEY` est bien
+  renseignée dans `backend/.env` et que le modèle configuré (`ANTHROPIC_MODEL`) existe encore (les modèles Anthropic
+  sont régulièrement mis à jour ; consultez https://docs.anthropic.com/en/docs/about-claude/models si une erreur
+  "model not found" apparaît dans les logs du backend).
+- **Erreur d'installation `sentence-transformers`/`chromadb`** → utilisez Python 3.10–3.12 dans un environnement virtuel dédié.
+- **CORS bloqué** → vérifiez `CORS_ORIGINS` dans `backend/.env` (doit inclure `http://localhost:5173`).
 
-### Erreur de connexion au backend
-- Vérifiez que le backend tourne sur le port 8000
-- Vérifiez les CORS dans `config.py`
-- Vérifiez que les dépendances Python sont installées
+## 🚀 Idées de fonctionnalités pour aller plus loin
 
-### Problèmes avec les embeddings
-- Vérifiez que les dépendances sont installées
-- Le premier téléchargement du modèle d'embeddings peut prendre du temps
-- Assurez-vous d'avoir assez d'espace disque (~500MB pour le modèle)
+Le cœur LLM/RAG est maintenant solide. Voici des pistes pour continuer à enrichir le projet :
 
-### Réponses lentes
-- Le premier appel peut être plus lent (chargement du modèle)
-- Utilisez une API key Hugging Face pour de meilleures performances
-- Vérifiez votre connexion internet
-
-## 🤝 Contribution
-
-Ce projet est développé pour le système éducatif burkinabè. Pour contribuer :
-
-1. Ajoutez des documents officiels du programme
-2. Améliorez les prompts pédagogiques
-3. Signalez les bugs et suggestions d'amélioration
-
-## 📄 Licence
-
-Ce projet est développé dans le cadre éducatif pour le Burkina Faso.
-
-## 👥 Équipe
-
-- Développement : Équipe technique
-- Validation pédagogique : Enseignants référents
-- Support : Direction du projet
-
-## 📞 Contact
-
-Pour toute question ou problème technique, contactez l'équipe de développement.
+- **Streaming des réponses** (Server-Sent Events) pour afficher le texte de Claude au fur et à mesure, comme ChatGPT
+- **Authentification élève/enseignant** + historique de conversation persistant (base de données)
+- **Tableau de bord enseignant** : suivi de la progression, chapitres les plus posés en question, export de rapports
+- **Mode "quiz" à répétition espacée** (spaced repetition) pour réviser avant les examens (BEPC/BAC)
+- **OCR de photos d'exercices manuscrits** (l'élève prend en photo son cahier, Claude corrige)
+- **Génération d'un QCM/contrôle complet** en PDF à partir d'un chapitre
+- **Mode hors-ligne partiel** (cache des dernières réponses via service worker / PWA installable)
+- **Multi-modèle** : fallback automatique Claude → autre fournisseur en cas de panne prolongée
+- **Textes vocaux** (Text-to-Speech) pour l'accessibilité
 
 ---
 
-**Version** : 1.0  
-**Date** : Juillet 2026  
-**Statut** : Prototype fonctionnel (MVP)
+**Version** : 2.0
+**Statut** : Prototype fonctionnel propulsé par Claude + RAG
