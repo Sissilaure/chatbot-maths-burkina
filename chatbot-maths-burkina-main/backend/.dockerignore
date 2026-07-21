@@ -7,9 +7,3 @@ tests/
 .env
 data/.jwt_secret
 data/app.db
-
-# Déploiement Railway : les documents et la base vectorielle sont envoyés séparément via
-# `railway volume files upload` (sur le disque persistant) plutôt que embarqués dans l'image —
-# la connexion de l'utilisateur ne tient pas sur un upload d'un coup de ~113 Mo. Voir DEPLOY.md.
-data/documents/
-data/chroma_db/
