@@ -1,5 +1,7 @@
 import os
 import shutil
+import glob
+from pathlib import Path
 import chromadb
 from chromadb.config import Settings
 from llama_index.core import VectorStoreIndex, StorageContext, Document, Settings as LlamaSettings
@@ -9,6 +11,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from config import config
 from curriculum_data import CURRICULUM
+from document_processor import DocumentProcessor
 import requests
 from bs4 import BeautifulSoup
 import json
@@ -65,6 +68,81 @@ class RAGSystem:
             collection = self._get_or_create_collection()
             self._build_index(collection)
             print("Vector store initialized")
+        
+        # Auto-load documents from disk
+        self.load_documents_from_disk()
+    
+    def _normalize_chapter_name(self, folder_name):
+        """Convert folder names to match curriculum chapter names.
+        Windows does not allow ':' in folder names, so we use '-' instead.
+        This function maps folder names back to the actual curriculum names.
+        """
+        # Import curriculum data to get the official chapter names
+        from curriculum_data import get_chapters
+        
+        # First try exact match
+        for class_code in ["6ème", "5ème", "4ème", "3ème", "2nde", "1ère", "Tle"]:
+            chapters = get_chapters(class_code)
+            for chapter in chapters:
+                # Normalize both for comparison (replace : with -)
+                norm_chapter = chapter.replace(" : ", " - ")
+                if norm_chapter == folder_name or chapter == folder_name:
+                    return chapter
+        
+        # If no match found, return the folder name as-is
+        return folder_name
+    
+    def load_documents_from_disk(self):
+        """Scan the documents directory and load all documents into the vector store"""
+        docs_dir = config.DATA_DIR
+        if not os.path.exists(docs_dir):
+            print(f"Documents directory not found: {docs_dir}")
+            return
+        
+        processor = DocumentProcessor(docs_dir)
+        documents_loaded = 0
+        
+        # Walk through all class folders
+        for class_folder in sorted(os.listdir(docs_dir)):
+            class_path = os.path.join(docs_dir, class_folder)
+            if not os.path.isdir(class_path) or class_folder.startswith('.'):
+                continue
+            
+            # Walk through all chapter folders
+            for chapter_folder in sorted(os.listdir(class_path)):
+                chapter_path = os.path.join(class_path, chapter_folder)
+                if not os.path.isdir(chapter_path) or chapter_folder.startswith('.'):
+                    continue
+                
+                # Normalize the chapter name (replace - with : to match curriculum)
+                actual_chapter = self._normalize_chapter_name(chapter_folder)
+                
+                # Process each file in the chapter folder
+                for filename in os.listdir(chapter_path):
+                    file_path = os.path.join(chapter_path, filename)
+                    if not os.path.isfile(file_path) or filename.startswith('.'):
+                        continue
+                    
+                    metadata = {
+                        "class": class_folder,
+                        "chapter": actual_chapter,
+                        "source": file_path
+                    }
+                    
+                    doc = None
+                    if filename.lower().endswith('.pdf'):
+                        doc = processor.process_pdf(file_path, metadata)
+                    elif filename.lower().endswith('.docx'):
+                        doc = processor.process_docx(file_path, metadata)
+                    elif filename.lower().endswith('.txt'):
+                        doc = processor.process_txt(file_path, metadata)
+                    
+                    if doc:
+                        self.add_documents([doc])
+                        documents_loaded += 1
+                        print(f"  Loaded: {class_folder}/{chapter_folder}/{filename} (chapter: {actual_chapter})")
+        
+        print(f"Total documents loaded from disk: {documents_loaded}")
     
     def add_documents(self, documents, metadata=None):
         """Add documents to the vector store"""
