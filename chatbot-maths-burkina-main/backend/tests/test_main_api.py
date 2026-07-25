@@ -32,7 +32,7 @@ def test_classes_list_matches_curriculum():
 def test_chapters_for_valid_class():
     res = client.get("/api/classes/6ème/chapters")
     assert res.status_code == 200
-    assert "Fractions" in res.json()["chapters"]
+    assert "Les fractions" in res.json()["chapters"]
 
 
 def test_chapters_for_invalid_class_returns_404():
@@ -45,7 +45,7 @@ def test_course_route_accepts_get_and_head(method):
     """Régression : FastAPI n'ajoute pas HEAD automatiquement aux routes @app.get comme le fait
     Starlette — le frontend fait un HEAD pour vérifier la disponibilité du cours avant d'ouvrir un
     nouvel onglet, et une route GET-only renvoyait toujours 405 (donc toujours "indisponible")."""
-    res = client.request(method, "/api/course/2nde/Vecteurs")
+    res = client.request(method, "/api/course/2nde/Vecteurs du plan")
     assert res.status_code == 200
 
 
@@ -138,3 +138,81 @@ def test_register_and_login_roundtrip():
 def test_register_rejects_short_password():
     res = client.post("/api/auth/register", json={"username": "toto", "password": "123"})
     assert res.status_code == 400
+
+
+def test_exercise_photo_forwards_history_to_rag_system(monkeypatch):
+    """Le champ `history` (JSON, en form field) doit être décodé et transmis tel quel à
+    explain_exercise_photo : c'est ce qui permet à Claude de "revoir" la photo sur les messages
+    de suivi (voir App.jsx::activePhoto) plutôt que de répondre en aveugle."""
+    captured = {}
+
+    def fake_explain(file_bytes, media_type, class_level, chapter, user_prompt, history):
+        captured["history"] = history
+        return "ok"
+
+    monkeypatch.setattr(main.rag_system, "explain_exercise_photo", fake_explain)
+
+    history = [{"role": "user", "content": "[Photo d'exercice envoyée]"}, {"role": "assistant", "content": "Voici l'exercice..."}]
+    res = client.post(
+        "/api/exercise/photo",
+        files={"file": ("exercice.jpg", b"\xff\xd8\xff", "image/jpeg")},
+        data={"history": __import__("json").dumps(history)},
+    )
+    assert res.status_code == 200
+    assert captured["history"] == history
+
+
+def test_exercise_photo_ignores_malformed_history(monkeypatch):
+    """Un `history` JSON invalide ne doit jamais faire planter la requête : repli sur liste vide."""
+    captured = {}
+
+    def fake_explain(file_bytes, media_type, class_level, chapter, user_prompt, history):
+        captured["history"] = history
+        return "ok"
+
+    monkeypatch.setattr(main.rag_system, "explain_exercise_photo", fake_explain)
+
+    res = client.post(
+        "/api/exercise/photo",
+        files={"file": ("exercice.jpg", b"\xff\xd8\xff", "image/jpeg")},
+        data={"history": "not valid json"},
+    )
+    assert res.status_code == 200
+    assert captured["history"] == []
+
+
+def test_generate_remediation_resilient_to_retrieval_failure(monkeypatch):
+    """generate_remediation cherche maintenant des extraits de cours pour ancrer le QCM (utile
+    pour les chapitres "Remédiation Hakili Lab") : si cette recherche échoue, la génération du
+    QCM ne doit pas planter pour autant (repli silencieux, voir le try/except du code)."""
+    def broken_retrieve(*args, **kwargs):
+        raise RuntimeError("chroma indisponible")
+
+    one_question = (
+        '{"notion": "n", "question": "q", "choix": ["a", "b", "c", "d"], '
+        '"reponse_correcte_index": 0, "explication": "e", "conseil": "c"}'
+    )
+    fake_json = '{"questions": [' + ",".join([one_question] * 8) + "]}"
+
+    monkeypatch.setattr(main.rag_system, "_retrieve_with_filters", broken_retrieve)
+    monkeypatch.setattr(main.rag_system, "_call_claude", lambda *a, **k: fake_json)
+
+    questions = main.rag_system.generate_remediation("3ème", "Les fractions", history=[])
+    assert len(questions) == 8
+
+
+def test_exercise_photo_without_history_defaults_to_empty_list(monkeypatch):
+    captured = {}
+
+    def fake_explain(file_bytes, media_type, class_level, chapter, user_prompt, history):
+        captured["history"] = history
+        return "ok"
+
+    monkeypatch.setattr(main.rag_system, "explain_exercise_photo", fake_explain)
+
+    res = client.post(
+        "/api/exercise/photo",
+        files={"file": ("exercice.jpg", b"\xff\xd8\xff", "image/jpeg")},
+    )
+    assert res.status_code == 200
+    assert captured["history"] == []

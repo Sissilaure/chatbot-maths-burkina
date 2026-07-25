@@ -59,7 +59,16 @@ export default function MessageBubble({ message, onRegenerate, regenerating }) {
               </div>
             )}
             {isUser ? (
-              <p className="whitespace-pre-wrap text-base leading-relaxed">{message.text}</p>
+              <>
+                {message.imageUrl && (
+                  <img
+                    src={message.imageUrl}
+                    alt="Photo de l'exercice envoyée"
+                    className="mb-2 max-h-64 w-auto rounded-lg border border-white/20 object-contain"
+                  />
+                )}
+                {message.text && <p className="whitespace-pre-wrap text-base leading-relaxed">{message.text}</p>}
+              </>
             ) : (
               <div className="prose-chat max-w-none">
                 <MathContent>{message.text || ""}</MathContent>

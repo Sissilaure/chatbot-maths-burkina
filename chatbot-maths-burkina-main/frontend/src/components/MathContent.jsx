@@ -1,6 +1,7 @@
 import React from "react"
 import ReactMarkdown from "react-markdown"
 import remarkMath from "remark-math"
+import remarkGfm from "remark-gfm"
 import rehypeKatex from "rehype-katex"
 import GeometryFigure from "./GeometryFigure"
 
@@ -22,7 +23,7 @@ function parseFigureSpec(raw) {
 export default function MathContent({ children }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkMath]}
+      remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
       components={{
         code({ inline, className, children: codeChildren, ...props }) {

@@ -1,6 +1,7 @@
 ﻿import os
 import re
 import json
+import base64
 import shutil
 import logging
 from typing import Optional
@@ -54,7 +55,14 @@ NO_EMOJI_INSTRUCTIONS = """TON ET MISE EN FORME — RÈGLE ABSOLUE : N'utilise J
 du type ✅, ⚠️, 💡, 🎉, 👋, 💪, 📐, 🚀, ✨, etc.), nulle part dans ta réponse, même pour marquer une réussite, un \
 conseil ou un encouragement. Marque l'importance uniquement avec la mise en forme Markdown : **gras** pour les \
 notions clés, `##`/`###` pour les titres, `>` pour une remarque importante. Écris comme un professeur ou un manuel \
-scolaire soigné, jamais comme un assistant conversationnel générique."""
+scolaire soigné, jamais comme un assistant conversationnel générique.
+
+TABLEAUX (tableau de signes, tableau de variations, tableau de valeurs...) : utilise TOUJOURS un vrai tableau \
+Markdown (syntaxe standard avec des `|` pour séparer les colonnes ET une ligne `|---|---|` juste sous l'en-tête), \
+jamais des tirets ou des espaces alignés à la main pour simuler des colonnes. Exemple pour un tableau de signes :
+| $x$ | $-\\infty$ | | $2$ | | $+\\infty$ |
+|---|---|---|---|---|---|
+| $f(x)$ | | $-$ | $0$ | $+$ | |"""
 
 # Certains modèles récents (dont celui configuré ici) refusent qu'une conversation se termine
 # par un tour "assistant" (pas de préremplissage) : la relance automatique en cas de réponse
@@ -430,13 +438,28 @@ class RAGSystem:
         chapitre_txt = chapter if chapter else \
             "non précisé par l'élève — identifie toi-même le thème mathématique concerné"
 
-        mission = (
-            f"Aider un élève de {class_level} à réellement comprendre le chapitre « {chapter} », "
-            "pas seulement lui donner un résultat."
-            if class_level or chapter else
-            "Aider un élève du Burkina Faso à réellement comprendre sa question de mathématiques, "
-            "pas seulement lui donner un résultat, même s'il n'a pas précisé sa classe ni son chapitre."
-        )
+        if chapter:
+            # Le chapitre sélectionné dans la barre latérale est un CONTEXTE, pas une contrainte :
+            # une question hors-sujet mais toujours mathématique doit recevoir une vraie réponse,
+            # pas une tentative forcée de rattachement à ce chapitre (source de réponses confuses
+            # et lentes, le modèle passant du temps à chercher un lien qui n'existe pas).
+            mission = (
+                f"Aider un élève {f'de {class_level} ' if class_level else ''}à réellement comprendre ses "
+                f"questions de mathématiques, pas seulement lui donner un résultat. Il suit actuellement le "
+                f"chapitre « {chapter} », mais si sa question porte sur un tout autre sujet, réponds quand "
+                "même complètement à SA question réelle, sans essayer de forcer artificiellement un lien "
+                f"avec « {chapter} »."
+            )
+        elif class_level:
+            mission = (
+                f"Aider un élève de {class_level} à réellement comprendre sa question de mathématiques, "
+                "pas seulement lui donner un résultat."
+            )
+        else:
+            mission = (
+                "Aider un élève du Burkina Faso à réellement comprendre sa question de mathématiques, "
+                "pas seulement lui donner un résultat, même s'il n'a pas précisé sa classe ni son chapitre."
+            )
 
         system_prompt = f"""Tu es « Prof Amira », un professeur de mathématiques expérimenté et bienveillant, \
 expert du programme officiel du Burkina Faso (de la 6ème à la Terminale).
@@ -462,7 +485,13 @@ Cela vaut aussi pour tous les symboles mathématiques (∈, ≤, ≥, √, π, �
 (`\\infty`, `\\in`, `\\leq`, `\\to`, `\\sqrt{{}}`...), jamais en Unicode brut ni épelés en toutes lettres. Écris \
 $+\\infty$, jamais « + infini » ; $x \\in \\mathbb{{R}}$, jamais « x appartient à R » ; un symbole mathématique \
 ne se remplace JAMAIS par le mot français qui le désigne.
-6. Quand tu résous un calcul ou un exercice, détaille CHAQUE étape sans en sauter aucune.
+6. Si l'élève demande d'expliquer une notion ou un théorème (question de cours), explique-la normalement avec un \
+exemple complet et entièrement résolu. En revanche, si l'élève te soumet SON PROPRE exercice ou calcul à résoudre, \
+NE DONNE PAS directement le résultat final : rappelle la méthode/formule à utiliser, détaille la première étape, \
+donne une piste sur la suivante, puis invite-le à continuer et à te dire où il en est. Donne la résolution \
+complète, étape par étape jusqu'au résultat, UNIQUEMENT si l'élève la demande explicitement (« donne-moi la \
+solution », « corrige mon calcul », « je suis bloqué, montre-moi », « je ne trouve pas »), ou s'il te montre déjà \
+sa propre tentative et te demande de la vérifier.
 7. Illustre avec un exemple concret et réaliste du quotidien burkinabè (marché, agriculture, artisanat, transport) \
 quand c'est pertinent pour la notion.
 8. Termine ta réponse par une courte question de compréhension ou une invitation à s'entraîner \
@@ -567,6 +596,114 @@ Réécris cette explication de façon beaucoup plus simple et différente dans l
         return self._local_simplify(question, original_answer, class_level)
 
     # ========================================================================
+    # PHOTO D'EXERCICE (vision Claude : explication + correction à partir d'une image)
+    # ========================================================================
+
+    def explain_exercise_photo(self, file_bytes: bytes, media_type: str, class_level: str = "",
+                                chapter: str = "", user_prompt: str = "", history: list = None) -> str:
+        """Analyse la photo (ou le PDF scanné) d'un exercice envoyé par l'élève et renvoie la
+        méthode à suivre puis la correction détaillée. Claude lit le fichier directement (vision
+        pour une image, lecture native pour un PDF) : plus fiable qu'un OCR classique pour des
+        notations mathématiques. `chapter` est le chapitre actuellement suivi dans la discussion,
+        pas nécessairement celui de l'exercice photographié (l'élève peut envoyer une photo sans
+        rapport avec la discussion en cours) : c'est un indice, jamais une contrainte."""
+        classe_txt = f"un élève de {class_level}" if class_level else "un élève"
+        chapitre_txt = (
+            f" Il suit actuellement le chapitre « {chapter} », mais l'exercice photographié peut "
+            "porter sur un tout autre sujet : identifie le VRAI sujet à partir du document, sans "
+            f"te forcer à le rattacher à « {chapter} »."
+            if chapter else ""
+        )
+        support_txt = "le PDF" if media_type == "application/pdf" else "la photo"
+        is_followup = bool(history)
+        followup_txt = (
+            "\n8. Un historique de conversation est fourni ci-dessous : l'élève continue à te parler du "
+            "MÊME exercice, déjà présenté plus haut dans l'échange (l'image jointe à ce message est "
+            "TOUJOURS celle de cet exercice). Ne redemande pas de recopier l'énoncé ni de le renvoyer : "
+            "réponds directement à sa nouvelle question, en te basant sur l'image et sur ce qui a déjà été dit."
+            if is_followup else ""
+        )
+
+        system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso, expert du \
+programme officiel (de la 6ème à la Terminale). Un élève t'envoie {support_txt} d'un exercice de maths \
+(papier, manuscrit ou imprimé) et attend ton aide.
+
+MISSION
+1. Identifie précisément l'énoncé de l'exercice à partir du document fourni (recopie-le brièvement \
+pour confirmer à l'élève que tu l'as bien lu, y compris s'il est manuscrit ou de mauvaise qualité).
+2. Si le document est illisible, flou, ou ne contient pas d'exercice de maths exploitable, dis-le \
+clairement et demande un envoi plus net plutôt que d'inventer un énoncé.
+3. Explique la méthode à suivre (quelle notion, quelle démarche, quelle formule) pour cet exercice précis.
+4. NE DONNE PAS directement la correction complète et le résultat final de cet exercice. Donne des pistes \
+progressives : détaille la première étape à faire, ce qu'il faut calculer ou chercher, un point de vigilance \
+fréquent sur ce type d'exercice — juste assez pour que l'élève puisse continuer seul. Termine en l'invitant à \
+essayer et à te dire où il en est (son résultat, ou l'étape où il bloque).
+5. EXCEPTION à la règle 4 : donne la correction complète, détaillée étape par étape jusqu'au résultat, si (a) \
+l'élève le demande explicitement (« donne-moi la solution/correction/réponse », « je suis bloqué, montre-moi »), \
+ou (b) il te montre sa propre tentative/son résultat et te demande de vérifier — dans ce cas corrige-le en \
+détail, en indiquant précisément où est l'erreur s'il y en a une.
+6. Si l'élève a ajouté une consigne ou une question précise avec son envoi, réponds D'ABORD à cette \
+demande précise (ex: "seulement la question 2", "vérifie juste mon calcul") plutôt qu'à tout l'exercice.
+7. Adapte le niveau de langue à {classe_txt}.{chapitre_txt}{followup_txt}
+
+{FIGURE_FORMAT_INSTRUCTIONS}
+
+{NO_EMOJI_INSTRUCTIONS}
+
+RÈGLES DE MISE EN FORME :
+- Structure en Markdown clair : ## pour les titres courts, **gras** pour les notions clés.
+- Toute formule ou symbole mathématique en LaTeX (`$...$` ou `$$...$$`), jamais en texte brut ni en Unicode.
+- Termine par une courte question de compréhension ou une invitation à s'entraîner sur un exercice similaire.
+"""
+
+        # PDF : bloc "document" (lu nativement par Claude, page par page). Image : bloc "image" (vision).
+        file_block = (
+            {"type": "document", "source": {"type": "base64", "media_type": media_type,
+                                             "data": base64.b64encode(file_bytes).decode("ascii")}}
+            if media_type == "application/pdf"
+            else {"type": "image", "source": {"type": "base64", "media_type": media_type,
+                                               "data": base64.b64encode(file_bytes).decode("ascii")}}
+        )
+        if is_followup:
+            instruction_txt = user_prompt.strip() if user_prompt and user_prompt.strip() else \
+                "Continue à m'aider sur ce même exercice."
+        else:
+            instruction_txt = (
+                f"Voici {support_txt} de mon exercice de maths. {user_prompt.strip()}"
+                if user_prompt and user_prompt.strip()
+                else f"Voici {support_txt} de mon exercice de maths. Aide-moi à le résoudre : "
+                     "explique-moi la méthode et guide-moi pas à pas."
+            )
+        user_content = [
+            file_block,
+            {"type": "text", "text": instruction_txt},
+        ]
+
+        # Les échanges précédents sur ce même exercice (voir le paramètre `history`) : sans ça,
+        # Claude ne verrait l'image qu'une seule fois et "l'oublierait" dès la question suivante,
+        # incapable de répondre à un simple "résous la question a" sur la même photo.
+        messages = []
+        if history:
+            max_messages = config.HISTORY_MAX_TURNS * 2
+            for turn in history[-max_messages:]:
+                role = turn.get("role")
+                content = turn.get("content", "")
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_content})
+
+        response = self._call_claude(
+            system_prompt,
+            messages,
+            max_tokens=config.MAX_TOKENS_EXERCISE_PHOTO,
+        )
+        if response:
+            return response
+
+        return ("Je n'arrive pas à analyser ce fichier pour le moment. Réessaie avec une photo plus nette, "
+                "bien cadrée sur l'exercice, ou recopie l'énoncé directement dans le chat.")
+
+    # ========================================================================
     # REMÉDIATION (QCM diagnostique de 8 questions sur le chapitre)
     # ========================================================================
 
@@ -593,12 +730,33 @@ Réécris cette explication de façon beaucoup plus simple et différente dans l
         else:
             context_block = "L'élève n'a pas encore posé de question précise : couvre le chapitre de façon équilibrée."
 
+        # Ancrage dans les documents fournis (même logique que generate_exercise) : filtre EXACT
+        # classe+chapitre pour ne récupérer que des extraits réellement déposés pour ce chapitre
+        # précis (utile en particulier pour les chapitres "Remédiation Hakili Lab", qui contiennent
+        # des modules de rattrapage tout faits avec exemples résolus et exercices corrigés).
+        document_block = ""
+        try:
+            context_nodes = self._retrieve_with_filters(
+                chapter,
+                [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
+                top_k=4,
+            )
+            if context_nodes:
+                document_excerpts = "\n---\n".join(n.get_content()[:800] for n in context_nodes)
+                document_block = f"""
+DOCUMENTS DE COURS FOURNIS — appuie-toi EN PRIORITÉ sur ces extraits (mêmes notions, mêmes exemples \
+que le professeur a préparés) pour rédiger les questions et leurs explications :
+{document_excerpts}
+"""
+        except Exception as e:
+            print(f"[WARN] Recherche de contexte pour la remediation echouee: {e}")
+
         system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
 Tu prépares un QCM diagnostique de remédiation pour un élève de {class_level} sur le chapitre « {chapter} », \
 AVANT qu'il ne continue le programme.
 
 {context_block}
-
+{document_block}
 CONTRAINTES :
 - Fournis EXACTEMENT 8 questions à choix multiples, couvrant les différentes notions du chapitre \
 (pas seulement la première partie), de la plus basique à la plus avancée.
@@ -1015,7 +1173,8 @@ CONTRAINTES :
 - Chaque question a EXACTEMENT 4 choix, une seule bonne réponse.
 - Contexte réaliste et local burkinabè quand c'est pertinent (marché, agriculture, élevage...).
 - Une courte "explication" accompagne chaque question (pourquoi cette réponse est la bonne).
-- N'utilise AUCUN emoji.
+
+{NO_EMOJI_INSTRUCTIONS}
 
 FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code) :
 {{"chapitre": "{chapter if chapter else '...'}", "enonce": "phrase d'introduction courte", "qcm": [{{"question": "...", \
@@ -1037,9 +1196,10 @@ jamais « + infini »).
 - OBLIGATOIRE si l'exercice implique une figure géométrique, même indirectement (triangle, champ/terrain rectangulaire, \
 cercle, angle, repère, configuration de Thalès/Pythagore, solide...) : remplis le champ "figure" avec le schéma \
 correspondant. Sinon mets "figure" à null. N'essaie JAMAIS de représenter une figure avec des caractères ASCII \
-(`|`, `/`, `\\`, `-`) dans "enonce" ou "solution" : uniquement le champ "figure" prévu à cet effet.
-- N'utilise AUCUN emoji dans "enonce", "indices", "solution" ou "reponse_finale" : uniquement du texte et du \
-Markdown/LaTeX standard (**gras**, `$...$`).
+(`|`, `/`, `\\`, `-`) dans "enonce" ou "solution" : uniquement le champ "figure" prévu à cet effet (ce champ est \
+un mécanisme différent des blocs ```figure``` du chat : ici toujours un objet JSON dédié, jamais du texte).
+
+{NO_EMOJI_INSTRUCTIONS}
 
 FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code), \
 exactement sous cette forme :

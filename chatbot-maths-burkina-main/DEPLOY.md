@@ -1,10 +1,10 @@
-# Déploiement de test — Railway (backend) + Cloudflare Pages (frontend)
+# Déploiement de test — Railway (backend) + Vercel (frontend)
 
 Guide pour déployer une version de test accessible par lien, gratuitement (essai Railway de 30
-jours / 5$ de crédit, Cloudflare Pages gratuit sans limite de temps).
+jours / 5$ de crédit, Vercel gratuit sans limite de temps pour un usage personnel/test).
 
 Ce que Claude Code a préparé dans le repo : `backend/Dockerfile`, `backend/.dockerignore`. Les
-étapes ci-dessous nécessitent tes propres comptes (Railway, Cloudflare) — impossibles à créer à ta
+étapes ci-dessous nécessitent tes propres comptes (Railway, Vercel) — impossibles à créer à ta
 place.
 
 ## Pourquoi ces choix
@@ -59,7 +59,9 @@ Toujours dans le dashboard, onglet **Variables** :
 | `ANTHROPIC_API_KEY` | ta clé API Anthropic (celle de `backend/.env`) |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5` |
 | `DB_PATH` | `/app/data/db/app.db` |
-| `CORS_ORIGINS` | l'URL Cloudflare Pages du frontend (étape 2) — met une valeur temporaire du style `https://placeholder.pages.dev` pour l'instant, à corriger après |
+| `CORS_ORIGINS` | l'URL Vercel du frontend (étape 2) — met une valeur temporaire du style `https://placeholder.vercel.app` pour l'instant, à corriger après |
+| `APP_ENV` | `production` |
+| `JWT_SECRET` | un secret généré une fois (ex. `python -c "import secrets; print(secrets.token_hex(32))"`), à ne jamais regénérer ensuite — sinon toutes les sessions élèves sont invalidées. **Obligatoire** : avec `APP_ENV=production`, le serveur refuse de démarrer sans lui. |
 
 `PORT` est injecté automatiquement par Railway, ne pas le définir toi-même.
 
@@ -72,28 +74,51 @@ style `https://ton-projet.up.railway.app`. Vérifie que ça répond :
 curl https://ton-projet.up.railway.app/api/health
 ```
 
-## 2. Frontend sur Cloudflare Pages
+## 2. Frontend sur Vercel
 
-1. Va sur [pages.cloudflare.com](https://pages.cloudflare.com), connecte ton compte GitHub (ou
-   crée un compte Cloudflare si besoin), et connecte le repo de ce projet.
-2. Configuration du build :
-   - **Dossier racine** : `frontend`
-   - **Commande de build** : `npm run build`
-   - **Dossier de sortie** : `dist`
-3. Variable d'environnement à ajouter (**Settings → Environment variables**) :
+### Option A — via le site (le plus simple)
+
+1. Va sur [vercel.com](https://vercel.com), connecte ton compte GitHub (ou crée un compte Vercel
+   si besoin), puis **Add New → Project** et importe le repo de ce projet.
+2. Configuration du build (Vercel détecte Vite automatiquement, vérifie quand même) :
+   - **Root Directory** : `frontend` (bouton "Edit" à côté de Root Directory)
+   - **Framework Preset** : Vite
+   - **Build Command** : `npm run build`
+   - **Output Directory** : `dist`
+3. Variable d'environnement à ajouter (**Settings → Environment Variables**, avant ou après le
+   premier déploiement) :
    - `VITE_API_URL` = l'URL Railway obtenue à l'étape 1 (ex : `https://ton-projet.up.railway.app`)
-4. Déploie. Tu obtiens une URL du style `https://ton-projet.pages.dev`.
+4. Déploie. Tu obtiens une URL du style `https://ton-projet.vercel.app`.
+
+`frontend/vercel.json` (déjà dans le repo) ajoute automatiquement des en-têtes de sécurité à toutes
+les pages servies (Content-Security-Policy, X-Frame-Options, etc.). Le `connect-src` de la CSP
+autorise par défaut `https://*.up.railway.app` : si tu utilises un domaine personnalisé pour le
+backend plutôt que le sous-domaine Railway par défaut, ajoute-le dans `connect-src` sinon le
+frontend ne pourra plus contacter l'API (bloqué par le navigateur, pas par le serveur — ça se
+manifeste par des erreurs réseau silencieuses dans la console).
+
+### Option B — en ligne de commande
+
+```bash
+npm install -g vercel
+cd frontend
+vercel login
+vercel        # premier déploiement (répond aux questions : Root Directory déjà correct car lancé depuis frontend/)
+vercel env add VITE_API_URL production   # colle l'URL Railway quand demandé
+vercel --prod
+```
 
 ## 3. Boucler la boucle : CORS
 
-Retourne dans les variables Railway (étape 1) et remplace `CORS_ORIGINS` par l'URL Cloudflare
-Pages réelle obtenue à l'étape 2 (ex : `https://ton-projet.pages.dev`). Ça redéploie
-automatiquement le service.
+Retourne dans les variables Railway (étape 1) et remplace `CORS_ORIGINS` par l'URL Vercel réelle
+obtenue à l'étape 2 (ex : `https://ton-projet.vercel.app`). Ça redéploie automatiquement le
+service. Si tu gardes aussi un aperçu de branche/preview Vercel (URL différente à chaque déploiement
+de preview), sépare plusieurs origines par une virgule dans `CORS_ORIGINS`.
 
 ## Vérifications avant de partager le lien
 
 - [ ] `https://ton-projet.up.railway.app/api/health` répond `{"status":"healthy",...}`
-- [ ] Le frontend Cloudflare Pages charge bien la liste des classes (preuve que l'appel API + CORS
+- [ ] Le frontend Vercel charge bien la liste des classes (preuve que l'appel API + CORS
       fonctionnent)
 - [ ] Un nouveau visiteur (navigation privée) tombe bien sur la page de connexion
 - [ ] Créer un compte de test, poser une question, générer un exercice, vérifier "voir le cours"
@@ -110,3 +135,16 @@ automatiquement le service.
   (ils ne sont écrits que dans la couche image, pas sur le volume persistant) — pour ajouter des
   documents durablement, il faut les remettre dans `backend/data/documents` en local et refaire
   `railway up`.
+
+## Note sur l'authentification (token de connexion)
+
+Le token de connexion (JWT) est stocké côté navigateur dans `localStorage`, pas dans un cookie
+`httpOnly`. Ce choix a été délibéré : Railway (backend) et Vercel (frontend) sont deux domaines
+différents, et un cookie partagé entre deux domaines différents (`SameSite=None`) est bloqué ou
+limité par certains navigateurs (Safari/iOS avec l'ITP en tête) — une partie des élèves aurait pu
+se retrouver déconnectée en boucle sans qu'on comprenne pourquoi. À la place, la protection contre
+le vol de token repose sur : l'absence de faille XSS trouvée dans l'audit de sécurité, la
+Content-Security-Policy ajoutée dans `frontend/vercel.json` (bloque les scripts injectés), et une
+expiration de session courte (`JWT_EXPIRE_DAYS=7`). Si un jour frontend et backend sont déployés
+sous un même domaine parent (ex. `app.tondomaine.com` / `api.tondomaine.com`), le cookie `httpOnly`
+redevient une option nettement plus simple et fiable à mettre en place.

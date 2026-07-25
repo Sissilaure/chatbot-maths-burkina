@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "framer-motion"
-import { AlertTriangle, FileDown, CheckCircle2, XCircle, PanelLeftClose, PanelLeftOpen } from "lucide-react"
+import { AlertTriangle, CheckCircle2, XCircle, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 import {
   checkHealth,
   getClasses,
@@ -8,6 +8,7 @@ import {
   askQuestionStream,
   simplifyResponse,
   generateExercise,
+  explainExercisePhoto,
   generateRemediation,
   getCourseFileUrl,
   checkCourseAvailable,
@@ -35,12 +36,16 @@ import BackgroundBlobs from "./components/BackgroundBlobs.jsx"
 import AuthGate from "./components/AuthGate.jsx"
 import AdminDashboard from "./components/AdminDashboard.jsx"
 import Button from "./components/ui/Button.jsx"
+import ExportMenu from "./components/ExportMenu.jsx"
 import { exportNodeToPDF } from "./lib/pdf.js"
+import { exportMessagesToDocx } from "./lib/docx.js"
+import { compressImageFile } from "./lib/image.js"
 import { getProfile, recordTopicVisit, recordStruggle, dismissStruggle, clearProfile } from "./lib/profile.js"
 import { getToken, logout as authLogout, restoreSession, AUTH_CHOICE_KEY } from "./lib/auth.js"
+import { buildHistoryUpTo } from "./lib/history.js"
 
-const MAX_HISTORY_MESSAGES = 12 // 6 échanges user/assistant
 const STORAGE_KEY = "chatmaths-session-v1"
+const EXERCISE_BATCH_SIZE = 5
 
 function loadSavedSession() {
   try {
@@ -108,6 +113,13 @@ export default function App() {
   const [regeneratingIndex, setRegeneratingIndex] = useState(null)
   const [serverOnline, setServerOnline] = useState(true)
   const [exportingSession, setExportingSession] = useState(false)
+  const [exerciseProgress, setExerciseProgress] = useState(null)
+  const [photoLoading, setPhotoLoading] = useState(false)
+  // Dernière photo/PDF d'exercice envoyée : tant qu'elle est active, les messages suivants la
+  // renvoient à Claude avec l'historique (voir handleSend) pour qu'il puisse continuer à "voir"
+  // l'exercice sur des questions de suivi ("résous la question a"). Remise à null au démarrage
+  // d'une nouvelle conversation, au changement de conversation, ou en cliquant sur "Nouveau sujet".
+  const [activePhoto, setActivePhoto] = useState(null)
   const [profile, setProfile] = useState(() => getProfile())
   const [toast, setToast] = useState(null)
 
@@ -186,7 +198,12 @@ export default function App() {
   // on n'écrase pas la session invité pendant qu'il est connecté.
   useEffect(() => {
     if (user) return
-    const payload = { classCode, chapitre, difficulty, messages, lastQuestion, lastAnswer }
+    // imageUrl est une blob: URL valable seulement pour la durée de vie de la page : on ne la
+    // persiste pas (elle serait cassée au prochain chargement de toute façon).
+    const persistableMessages = messages.some((m) => m.imageUrl)
+      ? messages.map((m) => (m.imageUrl ? { ...m, imageUrl: null } : m))
+      : messages
+    const payload = { classCode, chapitre, difficulty, messages: persistableMessages, lastQuestion, lastAnswer }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
     } catch {
@@ -269,8 +286,8 @@ export default function App() {
     }
   }
 
-  function pushUserMessage(text) {
-    setMessages((prev) => [...prev, { type: "user", text, sources: [] }])
+  function pushUserMessage(text, imageUrl = null) {
+    setMessages((prev) => [...prev, { type: "user", text, sources: [], imageUrl }])
   }
 
   function pushBotMessage(text, sources = [], kind = "chat") {
@@ -314,13 +331,6 @@ export default function App() {
     setMessages((prev) => prev.map((m, i) => (i === index ? { ...m, ...patch } : m)))
   }
 
-  function buildHistoryUpTo(list) {
-    return list
-      .filter((m) => m.type === "user" || m.type === "bot")
-      .slice(-MAX_HISTORY_MESSAGES)
-      .map((m) => ({ role: m.type === "user" ? "user" : "assistant", content: m.text || "" }))
-  }
-
   /** Élève connecté : profil reconstruit depuis SON historique serveur (propre à ce compte).
    * Invité : profil local (localStorage), remis à zéro à la déconnexion — voir handleLogout. */
   async function refreshProfile() {
@@ -349,6 +359,7 @@ export default function App() {
     const conv = await getConversation(token, id)
     setMessages(conv.messages)
     setActiveConv(id)
+    setActivePhoto(null)
     if (conv.class_level) setClassCode(conv.class_level)
     if (conv.chapter) setChapitre(conv.chapter)
     const { lastQuestion: lq, lastAnswer: la } = deriveLastExchange(conv.messages)
@@ -450,6 +461,7 @@ export default function App() {
         setActiveConv(null)
         setLastQuestion("")
         setLastAnswer("")
+        setActivePhoto(null)
       }
     } catch {
       showToast("Impossible de supprimer cette conversation.", "error")
@@ -461,6 +473,7 @@ export default function App() {
     setActiveConv(null)
     setLastQuestion("")
     setLastAnswer("")
+    setActivePhoto(null)
   }
 
   async function handleRemediationResults(remediationData, answers) {
@@ -485,8 +498,31 @@ export default function App() {
 
     setQuestion("")
     pushUserMessage(q)
-    pushBotMessage("", [], "chat")
     persistMessage({ type: "user", text: q, sources: [] })
+
+    // Une photo d'exercice est "active" (envoyée plus tôt dans cette conversation, jamais
+    // remplacée depuis) : on la renvoie avec ce message plutôt que de faire un chat texte normal,
+    // sinon Claude ne "voit" plus l'image et ne peut pas répondre à un suivi comme "résous le a".
+    // Pas de streaming ici : c'est le même appel non-streamé que l'envoi initial de la photo.
+    if (activePhoto) {
+      setLoading(true)
+      try {
+        const answer = await explainExercisePhoto(activePhoto, sendClassCode, sendChapitre, q, history)
+        pushBotMessage(answer, [], "chat")
+        persistMessage({ type: "bot", text: answer, sources: [], kind: "chat" })
+        setLastQuestion(q)
+        setLastAnswer(answer)
+        recordTopicVisit(sendClassCode, sendChapitre, sendClasseNom)
+        refreshProfile()
+      } catch (err) {
+        pushBotError("Impossible de continuer sur cette photo pour le moment. Réessaie, ou renvoie la photo.")
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+
+    pushBotMessage("", [], "chat")
     setLoading(true)
     setStreaming(true)
     patchLastMessage({ streaming: true })
@@ -575,17 +611,75 @@ export default function App() {
   async function handleExercise() {
     if (!classCode || loading || streaming) return
     setLoading(true)
+    const total = EXERCISE_BATCH_SIZE
+    setExerciseProgress({ current: 0, total })
+    // On réinjecte chaque exercice déjà généré dans l'historique envoyé au tour suivant,
+    // pour que Claude évite de proposer deux fois le même énoncé dans la série.
+    let history = buildHistoryUpTo(messages)
+    let successCount = 0
+    for (let i = 0; i < total; i++) {
+      setExerciseProgress({ current: i + 1, total })
+      try {
+        const exercise = await generateExercise(classCode, chapitre, difficulty, history)
+        pushExerciseMessage(exercise)
+        persistMessage({ type: "exercise", data: exercise })
+        recordTopicVisit(classCode, exercise.chapter || chapitre, classeNom)
+        const summary =
+          exercise.enonce || (exercise.qcm || []).map((q) => q.question).join(" / ") || `Exercice ${i + 1}`
+        history = [...history, { role: "assistant", content: `Exercice déjà proposé dans cette série : ${summary}` }]
+        successCount++
+      } catch (err) {
+        // Un échec isolé ne doit pas interrompre le reste de la série.
+      }
+    }
+    if (successCount === 0) {
+      pushBotError("Impossible de générer des exercices pour le moment.")
+    }
+    refreshProfile()
+    setExerciseProgress(null)
+    setLoading(false)
+  }
+
+  async function handlePhotoExercise(file) {
+    if (loading || streaming || photoLoading) return
+    setPhotoLoading(true)
+    const isImage = file.type.startsWith("image/")
+    // Ce que l'élève a éventuellement déjà tapé dans le champ de saisie accompagne la photo
+    // (ex: "vérifie juste la question 2") : comme un message normal, le champ est vidé après envoi.
+    const accompanyingPrompt = question.trim()
+    setQuestion("")
+    // Toujours un texte non vide, même sans consigne tapée par l'élève : ce texte alimente aussi
+    // l'historique envoyé à Claude pour les messages suivants (voir buildHistoryUpTo). Un texte
+    // vide y créerait un tour "élève" fantôme, sans aucune trace qu'une photo a été envoyée — le
+    // modèle perd alors le fil dès que la question suivante s'éloigne de sa réponse précédente.
+    const displayText =
+      accompanyingPrompt || (isImage ? "[Photo d'exercice envoyée]" : `[Fichier envoyé : ${file.name || "exercice.pdf"}]`)
+    // Un PDF n'est pas affichable dans une balise <img> (icône cassée) : on ne prévisualise
+    // que les vraies images, un PDF envoyé apparaît juste comme un message texte.
+    const imageUrl = isImage ? URL.createObjectURL(file) : null
+    pushUserMessage(displayText, imageUrl)
+    persistMessage({
+      type: "user",
+      text: accompanyingPrompt || (isImage ? "[Photo d'exercice envoyée]" : `[Fichier envoyé : ${file.name}]`),
+      sources: [],
+    })
     try {
-      const history = buildHistoryUpTo(messages)
-      const exercise = await generateExercise(classCode, chapitre, difficulty, history)
-      pushExerciseMessage(exercise)
-      persistMessage({ type: "exercise", data: exercise })
-      recordTopicVisit(classCode, exercise.chapter || chapitre, classeNom)
+      const toSend = isImage ? await compressImageFile(file) : file
+      const answer = await explainExercisePhoto(toSend, classCode, chapitre, accompanyingPrompt)
+      pushBotMessage(answer, [], "chat")
+      persistMessage({ type: "bot", text: answer, sources: [], kind: "chat" })
+      setLastQuestion(accompanyingPrompt || "Photo d'exercice envoyée")
+      setLastAnswer(answer)
+      // Reste "active" pour les messages suivants (voir handleSend) : Claude pourra continuer à
+      // voir cette même photo tant qu'une nouvelle photo ne la remplace pas ou que l'élève ne
+      // change pas de conversation/sujet.
+      setActivePhoto(toSend)
+      if (classCode) recordTopicVisit(classCode, chapitre, classeNom)
       refreshProfile()
     } catch (err) {
-      pushBotError("Impossible de générer un exercice pour le moment.")
+      pushBotError("Impossible d'analyser ce fichier pour le moment. Réessaie avec une photo plus nette et bien cadrée, ou un autre fichier.")
     }
-    setLoading(false)
+    setPhotoLoading(false)
   }
 
   async function handleCourse() {
@@ -632,6 +726,7 @@ export default function App() {
     setMessages([])
     setLastQuestion("")
     setLastAnswer("")
+    setActivePhoto(null)
   }
 
   function handleSuggestionClick(q) {
@@ -662,26 +757,31 @@ export default function App() {
     }
   }
 
-  async function handleDownloadSession() {
+  async function handleDownloadSession(format = "pdf") {
     if (messages.length === 0) {
       showToast("Pose au moins une question avant de télécharger la session — il n'y a rien à exporter pour l'instant.", "error")
       return
     }
-    if (!sessionContentRef.current || exportingSession) return
+    if (exportingSession) return
     setExportingSession(true)
     try {
-      const filename = `chatmaths-session-${Date.now()}.pdf`
-      await exportNodeToPDF(sessionContentRef.current, {
-        filename,
-        title: "Prof Amira — Session complète",
-        subtitle: `${classeNom || ""}${chapitre ? " · " + chapitre : ""}`.trim(),
-      })
+      const title = "Prof Amira — Session complète"
+      const subtitle = `${classeNom || ""}${chapitre ? " · " + chapitre : ""}`.trim()
+      let filename
+      if (format === "docx") {
+        filename = `chatmaths-session-${Date.now()}.docx`
+        await exportMessagesToDocx(messages, { filename, title, subtitle })
+      } else {
+        if (!sessionContentRef.current) return
+        filename = `chatmaths-session-${Date.now()}.pdf`
+        await exportNodeToPDF(sessionContentRef.current, { filename, title, subtitle })
+      }
       // Le téléchargement se fait silencieusement (aucune fenêtre ne s'ouvre) : sans ce message,
       // on ne peut pas savoir si ça a marché. Le fichier atterrit dans le dossier Téléchargements.
-      showToast(`PDF téléchargé : ${filename} (dossier Téléchargements)`, "success")
+      showToast(`Fichier téléchargé : ${filename} (dossier Téléchargements)`, "success")
     } catch (err) {
-      console.error("Export PDF échoué:", err)
-      showToast("Le téléchargement du PDF a échoué. Réessaie, ou recharge la page si le problème persiste.", "error")
+      console.error("Export de session échoué:", err)
+      showToast("Le téléchargement a échoué. Réessaie, ou recharge la page si le problème persiste.", "error")
     } finally {
       setExportingSession(false)
     }
@@ -793,16 +893,7 @@ export default function App() {
                 {classeNom ? `${classeNom}${chapitre ? " · " + chapitre : ""}` : "Discussion libre"}
               </p>
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleDownloadSession}
-              disabled={exportingSession}
-              title="Télécharger toute la conversation en PDF"
-            >
-              <FileDown size={14} className={exportingSession ? "animate-pulse" : ""} />
-              Télécharger la session
-            </Button>
+            <ExportMenu onExport={handleDownloadSession} exporting={exportingSession} label="Télécharger" />
           </div>
 
           <div ref={chatRef} className="scrollbar-thin flex-1 overflow-y-auto p-4 sm:p-6">
@@ -848,10 +939,17 @@ export default function App() {
             onCourse={handleCourse}
             onRemediation={handleRemediation}
             onSummary={handleSummary}
+            onDownloadSession={handleDownloadSession}
+            onPhotoSelected={handlePhotoExercise}
+            activePhoto={Boolean(activePhoto)}
+            onClearActivePhoto={() => setActivePhoto(null)}
             canSimplify={Boolean(lastAnswer)}
             canExercise={canGenerateExercise}
             canChapterFeatures={canUseChapterFeatures}
             loading={loading || streaming}
+            exerciseProgress={exerciseProgress}
+            exportingSession={exportingSession}
+            photoLoading={photoLoading}
           />
         </main>
       </div>

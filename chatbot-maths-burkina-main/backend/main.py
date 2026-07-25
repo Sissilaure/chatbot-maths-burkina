@@ -1,8 +1,11 @@
-﻿from fastapi import Depends, FastAPI, HTTPException, UploadFile, File
+﻿from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import os
 import json
 import sqlite3
@@ -16,6 +19,16 @@ import auth
 
 app = FastAPI(title="Chatbot Maths Burkina Faso API")
 
+# Limite de débit : protège à la fois le portefeuille (chaque appel Claude coûte) et les comptes
+# (empêche de tester des mots de passe en boucle sur /api/auth/login). En mémoire par processus —
+# suffisant pour un déploiement mono-instance ; passer sur un backend Redis si un jour on scale
+# horizontalement.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+AUTH_RATE_LIMIT = "5/minute"
+LLM_RATE_LIMIT = "20/minute"
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -24,6 +37,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# En-têtes de sécurité de base sur toutes les réponses : protège contre le clickjacking
+# (X-Frame-Options), le MIME-sniffing (X-Content-Type-Options), et limite les informations de
+# provenance envoyées vers d'autres sites (Referrer-Policy). HSTS est sans effet en local (HTTP)
+# mais utile derrière Railway/Cloudflare qui terminent le HTTPS en amont.
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
 
 # Initialize RAG system
 rag_system = RAGSystem()
@@ -161,12 +187,13 @@ def get_class_chapters(class_code: str):
     }
 
 @app.post("/api/chat", response_model=ChatResponse)
-def ask_question(request: QuestionRequest):
+@limiter.limit(LLM_RATE_LIMIT)
+def ask_question(request: Request, payload: QuestionRequest):
     """Ask a question to the chatbot. La classe et le chapitre sont optionnels :
     si l'élève ne les précise pas, Claude répond en mode général."""
     try:
-        class_level = request.class_level.strip()
-        chapter = request.chapter.strip()
+        class_level = payload.class_level.strip()
+        chapter = payload.chapter.strip()
 
         if class_level and class_level not in get_classes():
             raise HTTPException(status_code=400, detail="Invalid class level")
@@ -174,9 +201,9 @@ def ask_question(request: QuestionRequest):
         if chapter and class_level and chapter not in get_chapters(class_level):
             raise HTTPException(status_code=400, detail="Invalid chapter for this class")
 
-        history = [turn.dict() for turn in request.history]
+        history = [turn.dict() for turn in payload.history]
         response = rag_system.generate_response(
-            request.question,
+            payload.question,
             class_level,
             chapter,
             history=history
@@ -186,30 +213,33 @@ def ask_question(request: QuestionRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] /api/chat: {e}")
+        raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
 
 @app.post("/api/chat/stream")
-def ask_question_stream(request: QuestionRequest):
+@limiter.limit(LLM_RATE_LIMIT)
+def ask_question_stream(request: Request, payload: QuestionRequest):
     """Variante en streaming de /api/chat : renvoie la réponse au fil de l'eau (Server-Sent Events)
     afin que l'élève voie le texte s'écrire progressivement plutôt que d'attendre le bloc complet."""
-    class_level = request.class_level.strip()
-    chapter = request.chapter.strip()
+    class_level = payload.class_level.strip()
+    chapter = payload.chapter.strip()
 
     if class_level and class_level not in get_classes():
         raise HTTPException(status_code=400, detail="Invalid class level")
     if chapter and class_level and chapter not in get_chapters(class_level):
         raise HTTPException(status_code=400, detail="Invalid chapter for this class")
 
-    history = [turn.dict() for turn in request.history]
+    history = [turn.dict() for turn in payload.history]
 
     def event_stream():
         try:
             for event in rag_system.generate_response_stream(
-                request.question, class_level, chapter, history=history
+                payload.question, class_level, chapter, history=history
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+            print(f"[ERROR] /api/chat/stream: {e}")
+            yield f"data: {json.dumps({'error': 'Une erreur interne est survenue, réessaie.'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -218,25 +248,27 @@ def ask_question_stream(request: QuestionRequest):
     )
 
 @app.post("/api/remediation", response_model=RemediationResponse)
-def get_remediation(request: RemediationRequest):
+@limiter.limit(LLM_RATE_LIMIT)
+def get_remediation(request: Request, payload: RemediationRequest):
     """QCM diagnostique de 8 questions sur le chapitre : vérifie que l'élève a compris le cours
     avant de continuer, et pointe les notions précises à revoir sinon."""
     try:
-        class_level = request.class_level.strip()
-        chapter = request.chapter.strip()
+        class_level = payload.class_level.strip()
+        chapter = payload.chapter.strip()
 
         if class_level not in get_classes():
             raise HTTPException(status_code=400, detail="Invalid class level")
         if chapter not in get_chapters(class_level):
             raise HTTPException(status_code=400, detail="Invalid chapter for this class")
 
-        history = [turn.dict() for turn in request.history]
+        history = [turn.dict() for turn in payload.history]
         questions = rag_system.generate_remediation(class_level, chapter, history=history)
         return RemediationResponse(chapter=chapter, class_level=class_level, questions=questions)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] /api/remediation: {e}")
+        raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
 
 @app.api_route("/api/course/{class_code}/{chapter}", methods=["GET", "HEAD"])
 def get_course_file(class_code: str, chapter: str):
@@ -261,44 +293,47 @@ def get_course_file(class_code: str, chapter: str):
     return FileResponse(file_path, filename=os.path.basename(file_path))
 
 @app.post("/api/summary")
-def get_summary(request: SummaryRequest):
+@limiter.limit(LLM_RATE_LIMIT)
+def get_summary(request: Request, payload: SummaryRequest):
     """Résumé des points essentiels : de la séance en cours si une conversation existe,
     sinon du chapitre choisi."""
     try:
-        class_level = request.class_level.strip()
-        chapter = request.chapter.strip()
+        class_level = payload.class_level.strip()
+        chapter = payload.chapter.strip()
 
         if class_level and class_level not in get_classes():
             raise HTTPException(status_code=400, detail="Invalid class level")
         if chapter and class_level and chapter not in get_chapters(class_level):
             raise HTTPException(status_code=400, detail="Invalid chapter for this class")
 
-        history = [turn.dict() for turn in request.history]
+        history = [turn.dict() for turn in payload.history]
         content = rag_system.generate_summary(history, class_level, chapter)
         return {"content": content}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] /api/summary: {e}")
+        raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
 
 @app.post("/api/exercise", response_model=ExerciseResponse)
-def generate_exercise(request: ExerciseRequest):
+@limiter.limit(LLM_RATE_LIMIT)
+def generate_exercise(request: Request, payload: ExerciseRequest):
     """Generate a practice exercise. Le chapitre et la difficulté sont facultatifs : sans eux,
     un chapitre pertinent et une difficulté adaptée sont déduits (conversation récente, ou
     valeurs par défaut sinon)."""
     try:
-        if request.class_level not in get_classes():
+        if payload.class_level not in get_classes():
             raise HTTPException(status_code=400, detail="Invalid class level")
 
-        chapter = request.chapter.strip()
-        if chapter and chapter not in get_chapters(request.class_level):
+        chapter = payload.chapter.strip()
+        if chapter and chapter not in get_chapters(payload.class_level):
             raise HTTPException(status_code=400, detail="Invalid chapter for this class")
 
-        history = [turn.dict() for turn in request.history]
+        history = [turn.dict() for turn in payload.history]
         response = rag_system.generate_exercise(
-            request.class_level,
+            payload.class_level,
             chapter,
-            request.difficulty,
+            payload.difficulty,
             history=history
         )
 
@@ -306,27 +341,87 @@ def generate_exercise(request: ExerciseRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] /api/exercise: {e}")
+        raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
+
+ALLOWED_PHOTO_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf"}
+
+
+@app.post("/api/exercise/photo")
+@limiter.limit(LLM_RATE_LIMIT)
+async def explain_exercise_photo(
+    request: Request,
+    file: UploadFile = File(...),
+    class_level: str = "",
+    chapter: str = "",
+    prompt: str = "",
+    history: str = Form(""),
+):
+    """Reçoit la photo (ou le PDF scanné) d'un exercice et renvoie une explication de la méthode
+    suivie de la correction détaillée. Ouvert comme /api/chat et /api/exercise (pas d'authentification
+    requise) : le fichier n'est jamais écrit sur disque, seulement transmis en mémoire à l'API Claude.
+
+    `history` (JSON, champ de formulaire — pas la query string, qui a une limite de taille) permet
+    de renvoyer la MÊME photo avec les échanges suivants de la conversation (voir le frontend,
+    App.jsx::activePhoto) : sans ça, Claude "oublie" l'image dès le message suivant et ne peut plus
+    répondre à des questions de suivi comme "résous la question a" sur cette même photo."""
+    try:
+        if class_level and class_level not in get_classes():
+            raise HTTPException(status_code=400, detail="Invalid class level")
+        if chapter and class_level and chapter not in get_chapters(class_level):
+            raise HTTPException(status_code=400, detail="Invalid chapter for this class")
+
+        content_type = (file.content_type or "").lower()
+        if content_type not in ALLOWED_PHOTO_CONTENT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail="Format non supporté (photo jpeg/png/webp/gif ou PDF attendu)",
+            )
+
+        file_bytes = await file.read()
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="Fichier vide")
+        if len(file_bytes) > config.MAX_EXERCISE_PHOTO_SIZE_BYTES:
+            raise HTTPException(status_code=400, detail="Fichier trop volumineux (8 Mo maximum)")
+
+        history_list = []
+        if history:
+            try:
+                parsed = json.loads(history)
+                if isinstance(parsed, list):
+                    history_list = parsed
+            except (json.JSONDecodeError, TypeError):
+                history_list = []
+
+        answer = rag_system.explain_exercise_photo(file_bytes, content_type, class_level, chapter, prompt, history_list)
+        return {"answer": answer}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] /api/exercise/photo: {e}")
+        raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
 
 @app.post("/api/simplify")
-def simplify_answer(request: SimplifyRequest):
+@limiter.limit(LLM_RATE_LIMIT)
+def simplify_answer(request: Request, payload: SimplifyRequest):
     """Simplify an answer for better understanding"""
     try:
         simplified = rag_system.simplify_answer(
-            request.question,
-            request.answer,
-            request.class_level,
-            request.chapter
+            payload.question,
+            payload.answer,
+            payload.class_level,
+            payload.chapter
         )
 
         return {
             "simplified_answer": simplified,
-            "original_answer": request.answer
+            "original_answer": payload.answer
         }
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] /api/simplify: {e}")
+        raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
 
 ALLOWED_UPLOAD_EXTENSIONS = (".pdf", ".docx", ".txt")
 
@@ -377,7 +472,8 @@ async def upload_document(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] /api/documents/upload: {e}")
+        raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
 
 @app.post("/api/documents/initialize-sample")
 def initialize_sample_documents(decideur=Depends(auth.require_decideur)):
@@ -393,36 +489,39 @@ def initialize_sample_documents(decideur=Depends(auth.require_decideur)):
             "documents_count": len(sample_docs)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] /api/documents/initialize-sample: {e}")
+        raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
 
-MIN_PASSWORD_LENGTH = 6
+MIN_PASSWORD_LENGTH = 8
 
 # ============================================================================
 # COMPTES ÉLÈVES (auth optionnelle : nom d'utilisateur/mot de passe, JWT bearer)
 # ============================================================================
 
 @app.post("/api/auth/register", response_model=AuthResponse)
-def register(request: RegisterRequest):
-    username = request.username.strip()
+@limiter.limit(AUTH_RATE_LIMIT)
+def register(request: Request, payload: RegisterRequest):
+    username = payload.username.strip()
     if not username:
         raise HTTPException(status_code=400, detail="Nom d'utilisateur requis")
-    if len(request.password) < MIN_PASSWORD_LENGTH:
+    if len(payload.password) < MIN_PASSWORD_LENGTH:
         raise HTTPException(
             status_code=400,
             detail=f"Le mot de passe doit contenir au moins {MIN_PASSWORD_LENGTH} caractères",
         )
 
     try:
-        user_id = database.create_user(username, auth.hash_password(request.password))
+        user_id = database.create_user(username, auth.hash_password(payload.password))
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="Ce nom d'utilisateur est déjà pris")
 
     return AuthResponse(token=auth.create_token(user_id, username), username=username, role="eleve")
 
 @app.post("/api/auth/login", response_model=AuthResponse)
-def login(request: LoginRequest):
-    user = database.get_user_by_username(request.username.strip())
-    if not user or not auth.verify_password(request.password, user["password_hash"]):
+@limiter.limit(AUTH_RATE_LIMIT)
+def login(request: Request, payload: LoginRequest):
+    user = database.get_user_by_username(payload.username.strip())
+    if not user or not auth.verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Nom d'utilisateur ou mot de passe incorrect")
 
     return AuthResponse(
@@ -564,8 +663,9 @@ def admin_activity(class_level: str = "", decideur=Depends(auth.require_decideur
 
 
 @app.get("/api/rag/status")
-def rag_status():
-    """Diagnostic rapide du RAG : permet de verifier que les documents sont indexes."""
+def rag_status(decideur=Depends(auth.require_decideur)):
+    """Diagnostic rapide du RAG : permet de verifier que les documents sont indexes.
+    Réservé aux comptes décideur : expose des détails internes (chemins sur le serveur)."""
     return {
         "initialized": bool(rag_system.index),
         "collection": rag_system.collection_name,

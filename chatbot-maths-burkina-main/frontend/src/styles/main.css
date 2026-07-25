@@ -78,6 +78,26 @@ body {
   overflow-y: hidden;
   padding: 0.3em 0;
 }
+.prose-chat table {
+  margin: 0.8em 0;
+  border-collapse: collapse;
+  width: auto;
+  max-width: 100%;
+  overflow-x: auto;
+  display: block;
+  font-size: 0.95em;
+}
+.prose-chat th, .prose-chat td {
+  padding: 0.45em 0.9em;
+  @apply border border-base-content/20;
+}
+.prose-chat th {
+  @apply bg-base-200 font-semibold;
+  text-align: center;
+}
+.prose-chat td {
+  text-align: center;
+}
 
 /* Gradient text utility (slow shimmer sweep across the gradient) */
 .text-gradient {

@@ -3,7 +3,9 @@ import { motion } from "framer-motion"
 import { PlayCircle, X, Maximize2, Minimize2 } from "lucide-react"
 import Card from "./ui/Card"
 
-const DISMISSED_KEY = "chatmaths-video-guide-dismissed"
+// "-v2" : changer ce suffixe fait réapparaître le guide pour tout le monde (y compris ceux qui
+// l'avaient déjà fermé), utile après une mise à jour de la vidéo ou pour la remettre en avant.
+const DISMISSED_KEY = "chatmaths-video-guide-dismissed-v2"
 
 /**
  * Petit onglet toujours visible en haut du chat (épinglé, ne défile pas avec les messages) :

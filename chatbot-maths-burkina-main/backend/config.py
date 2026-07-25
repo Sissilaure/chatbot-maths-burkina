@@ -29,6 +29,10 @@ class Config:
     MAX_TOKENS_BASICS = int(os.getenv("MAX_TOKENS_BASICS", "2000"))
     MAX_TOKENS_REMEDIATION = int(os.getenv("MAX_TOKENS_REMEDIATION", "6144"))
     MAX_TOKENS_SUMMARY = int(os.getenv("MAX_TOKENS_SUMMARY", "1200"))
+    MAX_TOKENS_EXERCISE_PHOTO = int(os.getenv("MAX_TOKENS_EXERCISE_PHOTO", "3000"))
+    # Photo d'exercice envoyée par l'élève : au-delà, on refuse plutôt que de laisser l'upload
+    # traîner (mobile en 3G) ou de gonfler inutilement le payload envoyé à l'API Claude.
+    MAX_EXERCISE_PHOTO_SIZE_BYTES = int(os.getenv("MAX_EXERCISE_PHOTO_SIZE_BYTES", str(8 * 1024 * 1024)))
     # Nombre maximal de "continuations" automatiques si Claude tronque une réponse
     # (relance transparente pour ne jamais couper une explication en plein milieu).
     MAX_AUTO_CONTINUATIONS = int(os.getenv("MAX_AUTO_CONTINUATIONS", "3"))
@@ -42,9 +46,14 @@ class Config:
     # Comptes élèves (auth JWT + SQLite)
     DB_PATH = os.getenv("DB_PATH", "./data/app.db")
     JWT_SECRET = os.getenv("JWT_SECRET", "")
-    JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
+    # Volontairement court : réduit la fenêtre d'exploitation d'un token volé (pas de révocation
+    # côté serveur pour l'instant, voir auth.py).
+    JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "7"))
 
     # Application Configuration
+    # "production" active des vérifications strictes au démarrage (voir auth.py : refuse de
+    # démarrer sans JWT_SECRET explicite plutôt que d'en générer un silencieusement).
+    APP_ENV = os.getenv("APP_ENV", "development")
     APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
     APP_PORT = int(os.getenv("APP_PORT", "8000"))
     CORS_ORIGINS = os.getenv(

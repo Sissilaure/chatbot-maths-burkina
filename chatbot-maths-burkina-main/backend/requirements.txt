@@ -27,6 +27,9 @@ anthropic>=0.116.0
 bcrypt>=4.1.0
 pyjwt>=2.9.0
 
+# Limite de débit (protection brute-force + maîtrise des coûts d'API sur les routes ouvertes)
+slowapi>=0.1.9
+
 # Utilitaires
 numpy>=1.26.0
 

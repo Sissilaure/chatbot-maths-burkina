@@ -22,6 +22,7 @@ ajout/remplacement de PDF :
 from pathlib import Path
 from typing import Optional
 import re
+import sys
 
 import anthropic
 
@@ -196,6 +197,13 @@ def find_documents(processor: DocumentProcessor, anthropic_client=None, model: s
 
 
 def main():
+    # La console Windows utilise par defaut un encodage legacy (cp1252) qui ne sait pas afficher
+    # les symboles mathematiques du programme officiel (ex: l'ensemble "ℝ" des reels, "𝔻" des
+    # decimaux) presents dans les intitules de chapitres reels : sans ceci, print() plante des que
+    # ces caracteres apparaissent dans les logs de classification.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     anthropic_client = None
     if config.ANTHROPIC_API_KEY:
         anthropic_client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)

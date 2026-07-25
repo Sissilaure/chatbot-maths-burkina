@@ -199,6 +199,33 @@ export async function generateExercise(classCode, chapter, difficulty = null, hi
 }
 
 /**
+ * Envoie la photo d'un exercice (papier, manuscrit ou imprimé) et récupère l'explication +
+ * la correction. `classCode`/`chapter`/`prompt` sont facultatifs et passés en query string :
+ * l'appel est un multipart/form-data (fichier image), pas un JSON. `prompt` est la consigne
+ * tapée par l'élève en même temps que sa photo (ex: "vérifie juste la question 2").
+ * `history` (facultatif) : renvoyer la MÊME photo avec les échanges déjà tenus à son sujet,
+ * pour les questions de suivi (ex: "résous la question a") — voir App.jsx::activePhoto.
+ * Envoyé en champ de formulaire (pas en query string, qui a une limite de taille).
+ */
+export async function explainExercisePhoto(file, classCode = "", chapter = "", prompt = "", history = []) {
+  const params = new URLSearchParams()
+  if (classCode) params.set("class_level", classCode)
+  if (chapter) params.set("chapter", chapter)
+  if (prompt) params.set("prompt", prompt)
+
+  const formData = new FormData()
+  formData.append("file", file)
+  if (history.length > 0) formData.append("history", JSON.stringify(history))
+
+  const res = await fetch(`${API_BASE}/api/exercise/photo?${params.toString()}`, {
+    method: "POST",
+    body: formData,
+  })
+  const data = await handleJson(res, "Erreur lors de l'analyse de la photo")
+  return data.answer
+}
+
+/**
  * QCM diagnostique de remédiation (8 questions) sur le chapitre choisi.
  */
 export async function generateRemediation(classCode, chapter, history = []) {

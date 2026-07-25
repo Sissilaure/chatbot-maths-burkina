@@ -22,7 +22,7 @@ export default function Header({ theme, onToggleTheme, user, onLoginClick, onLog
           <h1 className="font-heading text-lg font-extrabold leading-tight">
             Prof <span className="text-gradient motion-safe:animate-shimmer">Amira</span>
           </h1>
-          <p className="text-sm text-base-content/60">Ton copain de maths, toujours prêt à t'aider</p>
+          <p className="text-sm text-base-content/60">Ton prof infatigable, toujours prêt à t'aider</p>
         </div>
       </div>
 

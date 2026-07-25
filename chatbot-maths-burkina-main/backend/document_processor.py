@@ -1,9 +1,8 @@
 ﻿"""Document Processor for math curriculum documents"""
-import os
 import re
 import unicodedata
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List
 
 COURSE_FILE_EXTENSIONS = (".pdf", ".docx", ".txt")
 

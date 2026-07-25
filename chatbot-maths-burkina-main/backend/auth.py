@@ -15,6 +15,17 @@ import database
 JWT_ALGORITHM = "HS256"
 JWT_SECRET_FILE = Path(config.DB_PATH).parent / ".jwt_secret"
 
+# En production, un JWT_SECRET auto-généré est dangereux : s'il n'est pas persisté sur un disque
+# durable (ou si l'instance change), il change silencieusement et invalide toutes les sessions en
+# cours sans le moindre message d'erreur. On préfère refuser de démarrer plutôt que de laisser ce
+# risque passer inaperçu. En développement local, la génération automatique reste pratique.
+if config.APP_ENV == "production" and not config.JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET doit être défini explicitement quand APP_ENV=production (variable "
+        "d'environnement manquante). Génère-en un (ex: `python -c \"import secrets; "
+        "print(secrets.token_hex(32))\"`) et configure-le sur le serveur."
+    )
+
 _security = HTTPBearer(auto_error=False)
 
 

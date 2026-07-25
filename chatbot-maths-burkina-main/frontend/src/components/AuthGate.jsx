@@ -106,7 +106,7 @@ export default function AuthGate({ onAuthenticated, onContinueAsGuest }) {
             initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
             className="text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-accent"
           >
-            Ton copain de maths
+            Ton prof infatigable
           </motion.p>
           <motion.p
             initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.08 }}
