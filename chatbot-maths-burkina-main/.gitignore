@@ -49,15 +49,9 @@ dist-ssr/
 .DS_Store
 Thumbs.db
 
-# Data
-data/documents/*
-!data/documents/.gitkeep
-data/chroma_db/*
-!data/chroma_db/.gitkeep
-
-# ChromaDB runtime data (generated, may be version-specific)
-backend/data/chroma_db/*
-!backend/data/chroma_db/.gitkeep
+# Data : documents/index volontairement suivis par Git dans ce projet (pas de stockage objet
+# séparé) — le Dockerfile de déploiement les embarque tels quels, voir DEPLOY.md. L'index Chroma
+# est compacté par ingest_documents.py pour rester sous la limite GitHub de 100 Mo/fichier.
 
 # Comptes élèves : base SQLite (mots de passe hashés) et secret de signature JWT
 backend/data/app.db

@@ -230,6 +230,33 @@ def main():
 
     print(f"\n{indexed} document(s) indexes sur {len(documents)} trouve(s).")
 
+    del rag_system
+    compact_sqlite_store()
+
+
+def compact_sqlite_store():
+    """Vide la table `embeddings_queue` de ChromaDB (un journal d'ecriture interne, utile pour
+    des consommateurs/replicas qu'on n'a pas ici en mono-serveur, jamais purge automatiquement)
+    puis VACUUM la base : environ -35% de taille sans rien perdre (verifie : les requetes de
+    recherche renvoient toujours les bons extraits apres coup). Sans ca, l'index depasse vite les
+    100 Mo acceptes par GitHub. Best-effort : si ca echoue (ex: fichier encore verrouille), on
+    n'interrompt pas l'ingestion pour autant, l'index reste utilisable, juste plus volumineux."""
+    import sqlite3
+    db_path = Path(config.CHROMA_PERSIST_DIR) / "chroma.sqlite3"
+    if not db_path.is_file():
+        return
+    try:
+        before = db_path.stat().st_size
+        con = sqlite3.connect(str(db_path))
+        con.execute("DELETE FROM embeddings_queue")
+        con.commit()
+        con.execute("VACUUM")
+        con.close()
+        after = db_path.stat().st_size
+        print(f"[OK] Index compacte : {before / 1024 / 1024:.0f} Mo -> {after / 1024 / 1024:.0f} Mo")
+    except Exception as e:
+        print(f"[ATTENTION] Compactage de l'index echoue (non bloquant) : {e}")
+
 
 if __name__ == "__main__":
     main()
