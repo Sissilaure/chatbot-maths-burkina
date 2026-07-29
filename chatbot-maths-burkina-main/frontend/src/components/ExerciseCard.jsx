@@ -13,13 +13,26 @@ const STAR_LABELS = {
   2: "Application guidée",
   3: "Notions combinées",
   4: "Situation d'intégration",
+  5: "Type olympiades",
 }
 
 function StarRating({ level }) {
   return (
     <span className="inline-flex items-center gap-0.5">
-      {[1, 2, 3, 4].map((i) => (
-        <Star key={i} size={12} className={i <= level ? "fill-primary text-primary" : "text-base-content/25"} />
+      {[1, 2, 3, 4, 5].map((i) => (
+        <Star
+          key={i}
+          size={12}
+          className={
+            i === 5
+              ? level === 5
+                ? "fill-accent text-accent"
+                : "text-accent/40"
+              : i <= level
+                ? "fill-primary text-primary"
+                : "text-base-content/25"
+          }
+        />
       ))}
     </span>
   )

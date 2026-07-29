@@ -96,13 +96,18 @@ def _repair_latex_json_escapes(text: str) -> str:
     return re.sub(r"\\(.)", lambda m: m.group(0) if m.group(1) in _JSON_VALID_ESCAPE_CHARS else "\\\\" + m.group(1),
                   text, flags=re.DOTALL)
 
-# Échelle de difficulté des exercices, en étoiles (1 à 4) : le niveau 4 correspond aux
-# "situations d'intégration" du programme burkinabè (énoncé contextualisé, plusieurs notions).
+# Échelle de difficulté des exercices, en étoiles (1 à 5) : le niveau 4 correspond aux
+# "situations d'intégration" du programme burkinabè (énoncé contextualisé, plusieurs notions),
+# le niveau 5 sort volontairement du programme direct (type olympiades/concours) — voir
+# generate_exercise, qui le traite à part (jamais ancré sur les documents de cours déposés :
+# aucun contenu de ce type dedans, vérifié).
 STAR_DIFFICULTY_LABELS = {
     1: "1 ÉTOILE — QCM D'APPLICATION DIRECTE (une seule notion de base, restitution immédiate du cours)",
     2: "2 ÉTOILES — APPLICATION GUIDÉE (1-2 étapes de raisonnement)",
     3: "3 ÉTOILES — NOTIONS COMBINÉES (plusieurs étapes, proche d'une évaluation de classe)",
     4: "4 ÉTOILES — SITUATION D'INTÉGRATION (énoncé contextualisé complexe, plusieurs notions combinées, niveau examen)",
+    5: "5 ÉTOILES — TYPE OLYMPIADES (problème de concours : astuce ou idée non standard, hors du cadre direct du "
+       "programme, difficulté nettement au-dessus d'une situation d'intégration)",
 }
 
 
@@ -1112,7 +1117,7 @@ RÈGLES :
         un chapitre de base du programme sinon) et la difficulté est déduite du niveau apparent des
         questions récentes (moyenne par défaut)."""
 
-        difficulty = difficulty if difficulty in (1, 2, 3, 4) else self._infer_difficulty(history)
+        difficulty = difficulty if difficulty in (1, 2, 3, 4, 5) else self._infer_difficulty(history)
         difficulty_label = STAR_DIFFICULTY_LABELS[difficulty]
 
         auto_chapter = not chapter
@@ -1124,20 +1129,24 @@ RÈGLES :
         # correspond vraiment, on récupérerait quand même des extraits d'un AUTRE chapitre de la
         # même classe et on croirait à tort avoir une source — l'exercice partirait alors sur un
         # sujet hors-programme sans jamais activer le repli recherche internet/génération libre.
+        # Niveau 5 (olympiades) : jamais ancré sur les documents de cours déposés — ce sont des
+        # manuels de programme standard, aucun contenu de type concours/olympiades dedans
+        # (vérifié) ; les y ancrer donnerait au mieux un exercice 4★ recyclé, pas un vrai défi.
         context_nodes = []
-        try:
-            if chapter:
-                context_nodes = self._retrieve_with_filters(
-                    chapter,
-                    [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
-                    top_k=4,
-                )
-            else:
-                recent = self._recent_user_questions(history, limit=1)
-                if recent:
-                    context_nodes = self.query(recent[0], class_level=class_level, top_k=4)
-        except Exception as e:
-            print(f"[WARN] Recherche de contexte pour l'exercice echouee: {e}")
+        if difficulty != 5:
+            try:
+                if chapter:
+                    context_nodes = self._retrieve_with_filters(
+                        chapter,
+                        [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
+                        top_k=4,
+                    )
+                else:
+                    recent = self._recent_user_questions(history, limit=1)
+                    if recent:
+                        context_nodes = self.query(recent[0], class_level=class_level, top_k=4)
+            except Exception as e:
+                print(f"[WARN] Recherche de contexte pour l'exercice echouee: {e}")
 
         web_search_tools = None
         if context_nodes:
@@ -1148,6 +1157,15 @@ notations, même niveau de raisonnement) ; adapte les valeurs numériques et la 
 pour que l'exercice reste ORIGINAL plutôt qu'un copier-coller :
 {document_excerpts}
 """
+        elif difficulty == 5:
+            context_instructions = """
+Ce niveau sort volontairement du programme direct de la classe (voir la consigne OLYMPIADES \
+ci-dessous) : ne te limite pas aux documents de cours, un outil de recherche internet est à ta \
+disposition si une source fiable (annales d'olympiades/concours francophones : Olympiades \
+Nationales, Kangourou des mathématiques, RMT, CIAM...) t'aide à trouver un bon problème, sinon \
+génère-en un original à partir de tes connaissances.
+"""
+            web_search_tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}]
         else:
             context_instructions = """
 Aucun document de cours fourni ne correspond à ce chapitre. Un outil de recherche internet est à \
@@ -1197,12 +1215,22 @@ FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte 
 "choix": ["...", "...", "...", "..."], "reponse_correcte_index": 0, "explication": "..."}}, ...]}}
 """
         else:
+            olympiad_instructions = f"""
+- CONSIGNE OLYMPIADES (niveau 5 uniquement) : ce n'est PAS un exercice de plus dans le programme de la classe — \
+c'est un problème de concours. Il doit reposer sur une idée, une astuce ou un angle d'attaque non standard (pas \
+juste "applique la formule du cours plusieurs fois") : par exemple un raisonnement par l'absurde, une invariance, \
+un dénombrement astucieux, une construction géométrique inattendue, une factorisation qui n'a rien d'évident au \
+premier regard. Reste dans des notions que l'élève de {class_level} connaît (ou presque), mais assemble-les d'une \
+façon qu'il n'a jamais vue en classe. L'indice unique doit pointer vers L'IDÉE CLÉ à avoir (pas vers une étape de \
+calcul routinière), sans la révéler. La solution doit mettre en valeur le raisonnement créatif, pas seulement le \
+calcul final.""" if difficulty == 5 else ""
+
             system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
 Tu génères un exercice d'entraînement ORIGINAL pour un élève de {class_level} sur le chapitre « {chapter_txt} ».
 {chapter_instructions}
 {context_instructions}
 CONTRAINTES :
-- Niveau de difficulté : {difficulty_label}
+- Niveau de difficulté : {difficulty_label}{olympiad_instructions}
 - Contexte réaliste et local burkinabè (marché, agriculture, élevage, artisanat, construction, transport en commun...)
 - Fournis exactement 1 indice qui guide SANS donner le résultat.
 - La solution doit être détaillée étape par étape, avec les formules en LaTeX (`$...$` ou `$$...$$`) : tout symbole \

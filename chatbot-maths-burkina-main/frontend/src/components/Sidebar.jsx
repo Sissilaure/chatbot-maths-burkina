@@ -12,6 +12,7 @@ const STAR_LABELS = {
   2: "Application guidée",
   3: "Notions combinées",
   4: "Situation d'intégration",
+  5: "Type olympiades",
 }
 
 function buildSuggestions(chapitre) {
@@ -125,14 +126,25 @@ export default function Sidebar({
           Difficulté des exercices
         </SectionLabel>
         <div className="flex items-center gap-1">
-          {[1, 2, 3, 4].map((level) => (
+          {[1, 2, 3, 4, 5].map((level) => (
             <button
               key={level}
               onClick={() => setDifficulty(level === difficulty ? null : level)}
               title={STAR_LABELS[level]}
               className="rounded-lg p-1 transition-transform hover:scale-110"
             >
-              <Star size={22} className={difficulty && level <= difficulty ? "fill-primary text-primary" : "text-base-content/25"} />
+              <Star
+                size={22}
+                className={
+                  level === 5
+                    ? difficulty === 5
+                      ? "fill-accent text-accent"
+                      : "text-accent/40"
+                    : difficulty && level <= difficulty
+                      ? "fill-primary text-primary"
+                      : "text-base-content/25"
+                }
+              />
             </button>
           ))}
           <button
