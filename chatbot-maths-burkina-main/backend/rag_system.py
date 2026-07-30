@@ -2,26 +2,18 @@
 import re
 import json
 import base64
-import shutil
-import logging
+from urllib.parse import urlparse
 from typing import Optional
-import chromadb
-from chromadb.config import Settings
-
-# La version de posthog installée est incompatible avec l'appel que fait chromadb 0.4.24 en
-# interne (`capture() takes 1 positional argument but 3 were given`) : anonymized_telemetry=False
-# désactive bien l'envoi réseau, mais chromadb tente quand même l'appel et logue une erreur à
-# chaque requête. C'est sans impact fonctionnel (capturé par son propre try/except), donc on
-# se contente de faire taire ce logger plutôt que de figer une version de posthog pour ça.
-logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 from llama_index.core import VectorStoreIndex, StorageContext, Document, Settings as LlamaSettings
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.vector_stores.chroma import ChromaVectorStore
+from llama_index.vector_stores.postgres import PGVectorStore
 from config import config
 from curriculum_data import CURRICULUM
 import anthropic
+
+EMBED_DIM = 384  # sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 
 
 FIGURE_FORMAT_INSTRUCTIONS = """FIGURES GÉOMÉTRIQUES — RÈGLE ABSOLUE, PRIORITAIRE SUR TOUT LE RESTE :
@@ -131,46 +123,58 @@ class RAGSystem:
         else:
             print("[WARN] ANTHROPIC_API_KEY manquante : le mode local degrade sera utilise.")
 
-        self.chroma_client = chromadb.PersistentClient(
-            path=config.CHROMA_PERSIST_DIR,
-            settings=Settings(anonymized_telemetry=False),
+        # Embeddings stockés à part (Postgres + pgvector, ex. Neon), pas embarqués dans le
+        # déploiement : voir DEPLOY.md::DATABASE_URL. `psql_url` parsée une fois ici, réutilisée
+        # par from_params() (host/port/... séparés, pas juste connection_string) : c'est ce qui
+        # laisse from_params() construire à la fois l'URL sync (psycopg2) ET async (asyncpg)
+        # requises par PGVectorStore, sans les construire à la main.
+        url = urlparse(config.DATABASE_URL)
+        self._pg_params = dict(
+            host=url.hostname,
+            port=str(url.port or 5432),
+            database=url.path.lstrip("/"),
+            user=url.username,
+            password=url.password,
         )
-        self.collection_name = "maths_burkina"
+        self.table_name = config.VECTOR_TABLE_NAME
         self.index = None
         self.storage_context = None
 
-    def _build_index(self, collection):
-        vector_store = ChromaVectorStore(chroma_collection=collection)
+    def _create_vector_store(self):
+        return PGVectorStore.from_params(
+            **self._pg_params,
+            table_name=self.table_name,
+            embed_dim=EMBED_DIM,
+        )
+
+    def _build_index(self, vector_store):
         self.storage_context = StorageContext.from_defaults(vector_store=vector_store)
         self.index = VectorStoreIndex.from_vector_store(
             vector_store=vector_store,
             embed_model=self.embed_model
         )
 
-    def _get_or_create_collection(self):
-        try:
-            return self.chroma_client.get_collection(name=self.collection_name)
-        except Exception:
-            return self.chroma_client.create_collection(name=self.collection_name)
-
     def _reset_store(self):
-        shutil.rmtree(config.CHROMA_PERSIST_DIR, ignore_errors=True)
-        os.makedirs(config.CHROMA_PERSIST_DIR, exist_ok=True)
-        self.chroma_client = chromadb.PersistentClient(
-            path=config.CHROMA_PERSIST_DIR,
-            settings=Settings(anonymized_telemetry=False),
-        )
+        """Supprime la table d'embeddings pour la reconstruire de zéro (voir ingest_documents.py).
+        PGVectorStore préfixe le nom de table donné par "data_" pour la vraie table SQL — vérifié
+        empiriquement (pas documenté), ce préfixe est stable tant qu'on ne change pas de version
+        du connecteur."""
+        import psycopg
+        with psycopg.connect(config.DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f'DROP TABLE IF EXISTS "data_{self.table_name}"')
+            conn.commit()
 
     def initialize_vector_store(self):
         try:
-            collection = self._get_or_create_collection()
-            self._build_index(collection)
+            vector_store = self._create_vector_store()
+            self._build_index(vector_store)
             print("Vector store loaded successfully")
         except Exception as e:
             print(f"Existing vector store is incompatible, resetting it: {e}")
             self._reset_store()
-            collection = self._get_or_create_collection()
-            self._build_index(collection)
+            vector_store = self._create_vector_store()
+            self._build_index(vector_store)
             print("Vector store initialized")
 
     def add_documents(self, documents, metadata=None):
@@ -250,10 +254,13 @@ class RAGSystem:
 
     def collection_count(self):
         try:
-            collection = self._get_or_create_collection()
-            return collection.count()
+            import psycopg
+            with psycopg.connect(config.DATABASE_URL) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f'SELECT COUNT(*) FROM "data_{self.table_name}"')
+                    return cur.fetchone()[0]
         except Exception as e:
-            print(f"Chroma count failed: {e}")
+            print(f"Postgres count failed: {e}")
             return 0
 
     # ========================================================================

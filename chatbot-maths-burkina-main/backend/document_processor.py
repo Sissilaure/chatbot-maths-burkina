@@ -132,10 +132,18 @@ def find_course_file(data_dir: str, class_code: str, chapter: str) -> Optional[s
 
 class DocumentProcessor:
     """Process math curriculum documents for the knowledge base"""
-    
+
     def __init__(self, data_dir: str):
         self.data_dir = data_dir
-        
+
+    @staticmethod
+    def _strip_nul(text: str) -> str:
+        """Retire les octets NUL (\\x00) parfois présents dans un texte extrait (PDF scannés/mal
+        encodés surtout) : SQLite/ChromaDB les toléraient silencieusement, mais Postgres les
+        rejette purement et simplement à l'insertion ("A string literal cannot contain NUL (0x00)
+        characters"), ce qui fait planter toute l'ingestion sur le premier document concerné."""
+        return text.replace("\x00", "")
+
     def process_pdf(self, file_path: str, metadata: dict) -> Optional[dict]:
         """Extract text from a PDF file"""
         try:
@@ -145,6 +153,7 @@ class DocumentProcessor:
                 reader = PdfReader(f)
                 for page in reader.pages:
                     text += page.extract_text() + "\n"
+            text = self._strip_nul(text)
 
             return {
                 "text": text,
@@ -164,7 +173,8 @@ class DocumentProcessor:
             import docx
             doc = docx.Document(file_path)
             text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-            
+            text = self._strip_nul(text)
+
             return {
                 "text": text,
                 "metadata": {
@@ -182,7 +192,8 @@ class DocumentProcessor:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 text = f.read()
-            
+            text = self._strip_nul(text)
+
             return {
                 "text": text,
                 "metadata": {

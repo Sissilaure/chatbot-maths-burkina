@@ -46,8 +46,11 @@ class Config:
     # Conversation memory (multi-turn)
     HISTORY_MAX_TURNS = int(os.getenv("HISTORY_MAX_TURNS", "6"))
 
-    # ChromaDB Configuration
-    CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./data/chroma_db")
+    # Base vectorielle (Postgres + pgvector, ex. Neon) : les embeddings ne sont plus embarqués
+    # dans le déploiement (fichiers ChromaDB locaux) mais stockés à part, accessibles par le
+    # réseau — voir DEPLOY.md. Chaîne de connexion complète (postgresql://user:pass@host/db).
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
+    VECTOR_TABLE_NAME = os.getenv("VECTOR_TABLE_NAME", "maths_burkina_embeddings")
 
     # Comptes élèves (auth JWT + SQLite)
     DB_PATH = os.getenv("DB_PATH", "./data/app.db")

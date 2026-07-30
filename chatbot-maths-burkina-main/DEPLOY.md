@@ -11,11 +11,13 @@ place.
 
 - Railway a un vrai disque persistant (contrairement à Render en gratuit) : les comptes élèves ne
   sont pas perdus à chaque redémarrage.
-- Le `Dockerfile` embarque directement `backend/data/documents` et `backend/data/chroma_db` tels
-  qu'ils sont sur ton disque en ce moment (déjà indexés avec la classification de chapitres par
-  contenu) — pas besoin de refaire les ~20-30 min de ré-indexation sur le serveur.
+- Le `Dockerfile` embarque directement `backend/data/documents` (les PDF de cours) tels qu'ils sont
+  sur ton disque en ce moment. Les embeddings (index vectoriel), eux, ne sont **pas** embarqués :
+  ils vivent à part sur Postgres/pgvector (Neon), accessible par le réseau via `DATABASE_URL` —
+  pas besoin de refaire les ~20-30 min de ré-indexation à chaque déploiement, ni de se soucier
+  d'une limite de taille sur l'image ou le dépôt Git.
 - Le disque persistant Railway ne sert qu'à la base SQLite des comptes élèves (`app.db`) : il est
-  monté sur un sous-dossier dédié pour ne pas écraser les documents/index embarqués dans l'image.
+  monté sur un sous-dossier dédié pour ne pas écraser les documents embarqués dans l'image.
 
 ## 1. Backend sur Railway
 
@@ -31,9 +33,8 @@ railway.app si tu n'en as pas).
 
 ### Créer le projet et déployer
 
-Depuis le dossier `backend/` du projet (important : c'est ce dossier qui sera envoyé tel quel,
-donc avec `data/documents` et `data/chroma_db` même s'ils sont dans `.gitignore` — Railway ne
-passe pas par GitHub ici) :
+Depuis le dossier `backend/` du projet (important : c'est ce dossier qui sera envoyé tel quel, donc
+avec `data/documents` même s'il est dans `.gitignore` — Railway ne passe pas par GitHub ici) :
 
 ```bash
 cd backend
@@ -58,6 +59,7 @@ Toujours dans le dashboard, onglet **Variables** :
 |---|---|
 | `ANTHROPIC_API_KEY` | ta clé API Anthropic (celle de `backend/.env`) |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5` |
+| `DATABASE_URL` | chaîne de connexion Postgres Neon (celle de `backend/.env`, dashboard Neon → Connection Details) — stocke l'index vectoriel (embeddings des cours) |
 | `DB_PATH` | `/app/data/db/app.db` |
 | `CORS_ORIGINS` | l'URL Vercel du frontend (étape 2) — met une valeur temporaire du style `https://placeholder.vercel.app` pour l'instant, à corriger après |
 | `APP_ENV` | `production` |
@@ -131,10 +133,12 @@ de preview), sépare plusieurs origines par une virgule dans `CORS_ORIGINS`.
   Au-delà, il faut passer sur un plan payant pour continuer à faire tourner le service en continu.
 - **Premier chargement après une période creuse** : si Railway met le service en veille (dépend du
   plan), la première requête relance le modèle d'embeddings (~15-20s, déjà observé en local).
-- **Documents ajoutés via l'upload admin après le déploiement** ne survivront pas à un redéploiement
-  (ils ne sont écrits que dans la couche image, pas sur le volume persistant) — pour ajouter des
-  documents durablement, il faut les remettre dans `backend/data/documents` en local et refaire
-  `railway up`.
+- **Fichiers PDF ajoutés via l'upload admin après le déploiement** ne survivront pas à un
+  redéploiement (ils ne sont écrits que dans la couche image, pas sur le volume persistant) — pour
+  ajouter des documents durablement, il faut les remettre dans `backend/data/documents` en local,
+  relancer `python ingest_documents.py` (indexation vers Neon) puis refaire `railway up`. Ceci ne
+  concerne que les fichiers PDF eux-mêmes (utilisés pour "voir le cours") : l'index vectoriel, lui,
+  vit sur Neon et n'est jamais affecté par un redéploiement.
 
 ## Note sur l'authentification (token de connexion)
 

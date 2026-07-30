@@ -49,9 +49,12 @@ dist-ssr/
 .DS_Store
 Thumbs.db
 
-# Data : documents/index volontairement suivis par Git dans ce projet (pas de stockage objet
-# séparé) — le Dockerfile de déploiement les embarque tels quels, voir DEPLOY.md. L'index Chroma
-# est compacté par ingest_documents.py pour rester sous la limite GitHub de 100 Mo/fichier.
+# Data : documents de cours volontairement suivis par Git dans ce projet (pas de stockage objet
+# séparé) — le Dockerfile de déploiement les embarque tels quels, voir DEPLOY.md.
+
+# Embeddings : stockés à part sur Postgres/pgvector (Neon, voir DATABASE_URL dans DEPLOY.md), plus
+# embarqués dans le déploiement. Ancien dossier ChromaDB local, obsolète, ignoré si encore présent.
+backend/data/chroma_db/
 
 # Comptes élèves : base SQLite (mots de passe hashés) et secret de signature JWT
 backend/data/app.db

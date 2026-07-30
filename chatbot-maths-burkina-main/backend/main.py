@@ -668,10 +668,9 @@ def rag_status(decideur=Depends(auth.require_decideur)):
     Réservé aux comptes décideur : expose des détails internes (chemins sur le serveur)."""
     return {
         "initialized": bool(rag_system.index),
-        "collection": rag_system.collection_name,
+        "table": rag_system.table_name,
         "chunks_indexed": rag_system.collection_count(),
         "documents_dir": config.DATA_DIR,
-        "chroma_dir": config.CHROMA_PERSIST_DIR,
     }
 
 
