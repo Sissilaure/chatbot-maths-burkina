@@ -25,6 +25,12 @@ class Config:
     # une marge confortable évite de dépendre de la relance automatique (fragile en mode JSON,
     # le modèle ne reprenant pas toujours la chaîne exactement où elle a été coupée).
     MAX_TOKENS_EXERCISE = int(os.getenv("MAX_TOKENS_EXERCISE", "6144"))
+    # Niveau 5 (olympiades) : raisonnement créatif + solution qui explique l'astuce, pas seulement
+    # le calcul — plus long qu'un exercice standard. Avec MAX_TOKENS_EXERCISE, le budget était
+    # souvent englouti par le raisonnement interne du modèle avant la moindre sortie JSON, ce qui
+    # déclenchait un repli silencieux vers l'exercice de secours générique (bien plus facile que
+    # prévu : "olympiades" affiché, mais contenu basique).
+    MAX_TOKENS_EXERCISE_OLYMPIAD = int(os.getenv("MAX_TOKENS_EXERCISE_OLYMPIAD", "8192"))
     MAX_TOKENS_SIMPLIFY = int(os.getenv("MAX_TOKENS_SIMPLIFY", "1500"))
     MAX_TOKENS_BASICS = int(os.getenv("MAX_TOKENS_BASICS", "2000"))
     MAX_TOKENS_REMEDIATION = int(os.getenv("MAX_TOKENS_REMEDIATION", "6144"))

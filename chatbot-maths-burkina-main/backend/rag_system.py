@@ -1160,12 +1160,17 @@ pour que l'exercice reste ORIGINAL plutôt qu'un copier-coller :
         elif difficulty == 5:
             context_instructions = """
 Ce niveau sort volontairement du programme direct de la classe (voir la consigne OLYMPIADES \
-ci-dessous) : ne te limite pas aux documents de cours, un outil de recherche internet est à ta \
-disposition si une source fiable (annales d'olympiades/concours francophones : Olympiades \
-Nationales, Kangourou des mathématiques, RMT, CIAM...) t'aide à trouver un bon problème, sinon \
-génère-en un original à partir de tes connaissances.
+ci-dessous) : ne te limite pas aux documents de cours. Compose un problème ORIGINAL à partir de \
+tes connaissances des grands classiques de concours (olympiades francophones, Kangourou, RMT, \
+CIAM...) plutôt que de chercher à en citer un exact — l'objectif est un exercice inédit et bien \
+calibré pour la classe, pas une citation d'archive.
 """
-            web_search_tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}]
+            # Pas d'outil de recherche web ici : un aller-retour de recherche consomme une bonne
+            # partie du budget de tokens avant même de generer l'exercice, ce qui faisait souvent
+            # revenir une reponse vide (voir MAX_TOKENS_EXERCISE_OLYMPIAD) sur ce niveau
+            # spécifiquement — et une recherche n'apporte de toute façon pas grand-chose ici : aucune
+            # vraie banque d'annales n'est indexée de façon exploitable, mieux vaut miser sur la
+            # composition originale.
         else:
             context_instructions = """
 Aucun document de cours fourni ne correspond à ce chapitre. Un outil de recherche internet est à \
@@ -1217,13 +1222,17 @@ FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte 
         else:
             olympiad_instructions = f"""
 - CONSIGNE OLYMPIADES (niveau 5 uniquement) : ce n'est PAS un exercice de plus dans le programme de la classe — \
-c'est un problème de concours. Il doit reposer sur une idée, une astuce ou un angle d'attaque non standard (pas \
-juste "applique la formule du cours plusieurs fois") : par exemple un raisonnement par l'absurde, une invariance, \
-un dénombrement astucieux, une construction géométrique inattendue, une factorisation qui n'a rien d'évident au \
-premier regard. Reste dans des notions que l'élève de {class_level} connaît (ou presque), mais assemble-les d'une \
-façon qu'il n'a jamais vue en classe. L'indice unique doit pointer vers L'IDÉE CLÉ à avoir (pas vers une étape de \
-calcul routinière), sans la révéler. La solution doit mettre en valeur le raisonnement créatif, pas seulement le \
-calcul final.""" if difficulty == 5 else ""
+c'est un problème de concours, nettement plus dur qu'une "situation d'intégration" (niveau 4). Choisis UNE \
+technique classique de concours et construis le problème AUTOUR d'elle (ne te contente pas de la nommer) : \
+raisonnement par l'absurde, principe des tiroirs (pigeonhole), argument d'invariant ou de coloriage, principe \
+extrémal (considérer le plus grand/petit cas), récurrence non triviale, télescopage, symétrie ou changement de \
+variable astucieux, dénombrement à double compte, factorisation ou identité algébrique cachée. \
+INTERDIT : un exercice qui se résout en appliquant une formule du cours une ou deux fois, même avec des nombres \
+compliqués — ce n'est qu'un niveau 4 déguisé, pas un niveau 5. Un élève sérieux de {class_level} doit pouvoir \
+comprendre l'énoncé et les notions utilisées, mais PAS voir le chemin de résolution immédiatement : il doit \
+chercher, essayer, se tromper avant de trouver l'angle d'attaque. L'indice unique pointe vers L'IDÉE CLÉ (quelle \
+technique utiliser), jamais vers une étape de calcul. La solution doit expliquer POURQUOI cette idée fonctionne, \
+pas seulement dérouler le calcul final.""" if difficulty == 5 else ""
 
             system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
 Tu génères un exercice d'entraînement ORIGINAL pour un élève de {class_level} sur le chapitre « {chapter_txt} ».
@@ -1267,8 +1276,9 @@ qu'il annote (jamais pile sur un segment ni à l'intérieur d'un polygone rempli
             "chapitre le plus adapté, en suivant la consigne du système."
         )
 
+        exercise_max_tokens = config.MAX_TOKENS_EXERCISE_OLYMPIAD if difficulty == 5 else config.MAX_TOKENS_EXERCISE
         response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}],
-                                      max_tokens=config.MAX_TOKENS_EXERCISE, tools=web_search_tools)
+                                      max_tokens=exercise_max_tokens, tools=web_search_tools)
 
         if response:
             parsed, claude_chapter = self._parse_exercise_json(response, difficulty)
