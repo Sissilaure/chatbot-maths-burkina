@@ -1,6 +1,7 @@
 ﻿from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -18,6 +19,11 @@ import database
 import auth
 
 app = FastAPI(title="Chatbot Maths Burkina Faso API")
+
+# Déploiements "tout-en-un" (voir routes en fin de fichier) : dossier du build React/Vite,
+# présent seulement si le frontend a été copié dans l'image à côté du backend. Absent en
+# local/Railway (frontend déployé à part, ex. Vercel) : les routes concernées restent inactives.
+_FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "frontend_dist")
 
 # Limite de débit : protège à la fois le portefeuille (chaque appel Claude coûte) et les comptes
 # (empêche de tester des mots de passe en boucle sur /api/auth/login). En mémoire par processus —
@@ -156,6 +162,11 @@ class StruggleRequest(BaseModel):
 
 @app.get("/")
 def read_root():
+    # Déploiements "tout-en-un" (frontend servi par ce même backend, voir plus bas dans ce
+    # fichier) : la page d'accueil doit être l'appli React, pas ce message JSON.
+    index_path = os.path.join(_FRONTEND_DIST, "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
     return {
         "message": "Chatbot Maths Burkina Faso API",
         "version": "1.0",
@@ -684,6 +695,28 @@ def health_check():
         "model": config.ANTHROPIC_MODEL,
         "llm_configured": bool(rag_system.anthropic_client)
     }
+
+
+# ============================================================================
+# FRONTEND (optionnel, suite) — _FRONTEND_DIST défini en haut du fichier.
+# DOIT rester en dernier dans ce fichier : la route générique "/{full_path}"
+# capturerait sinon les routes /api/* définies plus haut.
+# ============================================================================
+
+if os.path.isdir(_FRONTEND_DIST):
+    _assets_dir = os.path.join(_FRONTEND_DIST, "assets")
+    if os.path.isdir(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="frontend-assets")
+
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str):
+        """Sert index.html pour toute route qui n'est ni /api/* ni un fichier statique
+        existant (le routage côté client — React Router — gère le reste dans le navigateur)."""
+        candidate = os.path.join(_FRONTEND_DIST, full_path)
+        if full_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(_FRONTEND_DIST, "index.html"))
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -60,5 +60,9 @@ backend/data/chroma_db/
 backend/data/app.db
 backend/data/.jwt_secret
 
+# Build frontend copié à côté du backend pour les déploiements "tout-en-un" (voir main.py) :
+# généré via `npm run build`, jamais commité (comme frontend/dist, déjà ignoré ci-dessus).
+backend/frontend_dist/
+
 # Logs
 *.log
