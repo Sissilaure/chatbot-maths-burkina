@@ -12,10 +12,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt
 
-# Copie tout le dossier backend, y compris data/documents et data/chroma_db déjà construits
-# localement (voir .dockerignore : contrairement à .gitignore, il n'exclut pas data/) — évite de
-# refaire la ré-indexation (~20-30 min avec la classification de chapitres par Claude) au premier
-# démarrage du conteneur.
+# Copie tout le dossier backend, y compris data/documents (PDF de cours, nécessaires pour "voir
+# le cours") — voir .dockerignore : contrairement à .gitignore, il n'exclut pas data/. L'index
+# vectoriel (embeddings), lui, n'est plus embarqué dans l'image : il vit à part sur Postgres/
+# pgvector (Neon), accessible via la variable DATABASE_URL — voir DEPLOY.md.
 COPY . .
 
 # Le modèle d'embeddings HuggingFace (sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2)
