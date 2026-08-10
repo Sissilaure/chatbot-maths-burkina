@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import {
   SendHorizontal, PencilRuler, BookOpen, ListChecks, ClipboardCheck, Camera, ImageOff,
   MoreHorizontal, FileDown, FileText, GraduationCap,
@@ -7,6 +7,28 @@ import Button from "./ui/Button"
 import ExportMenu from "./ExportMenu"
 import BottomSheet from "./ui/BottomSheet"
 import { useIsMobile } from "../lib/useMediaQuery"
+
+// Hauteur automatique du textarea : une ligne au repos, jusqu'à 4 lignes maximum, pas de barre
+// de défilement visible avant cette limite (voir RAPPORT_MOBILE.md §6).
+const TEXTAREA_MAX_LINES = 4
+
+function useAutoResizeTextarea(value) {
+  const ref = useRef(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = "auto"
+    const styles = getComputedStyle(el)
+    const lineHeight = parseFloat(styles.lineHeight) || 24
+    const verticalPadding = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom) || 0
+    const verticalBorder = parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth) || 0
+    const maxHeight = lineHeight * TEXTAREA_MAX_LINES + verticalPadding + verticalBorder
+    const next = Math.min(el.scrollHeight, maxHeight)
+    el.style.height = `${next}px`
+    el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden"
+  }, [value])
+  return ref
+}
 
 /** Une entrée de la feuille "⋯" (mobile) : cible large (min 44px), icône + libellé + description
  * facultative, désactivée avec la même logique que le bouton bureau équivalent. */
@@ -70,6 +92,7 @@ export default function ChatInput({
   const photoInputRef = useRef(null)
   const isMobile = useIsMobile()
   const [sheetOpen, setSheetOpen] = useState(false)
+  const textareaRef = useAutoResizeTextarea(question)
 
   function handleKeyDown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -154,9 +177,10 @@ export default function ChatInput({
         )}
 
         <textarea
-          className="textarea textarea-bordered max-h-40 min-h-[3rem] w-full flex-1 resize-none rounded-xl bg-base-100 text-base"
+          ref={textareaRef}
+          className="textarea textarea-bordered w-full flex-1 resize-none rounded-xl bg-base-100 text-base leading-6"
           rows={1}
-          placeholder="Pose ta question de maths ici, à tout moment..."
+          placeholder="Pose ta question"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={handleKeyDown}
