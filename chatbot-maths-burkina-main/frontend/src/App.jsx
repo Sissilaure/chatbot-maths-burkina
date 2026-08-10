@@ -931,7 +931,6 @@ export default function App() {
                 setChapitre={setChapitre}
                 difficulty={difficulty}
                 setDifficulty={setDifficulty}
-                onSuggestionClick={handleSuggestionClick}
                 onReset={handleReset}
                 profile={profile}
                 onResumeTopic={handleResumeTopic}
