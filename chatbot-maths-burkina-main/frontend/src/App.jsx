@@ -49,7 +49,6 @@ import { buildHistoryUpTo } from "./lib/history.js"
 import { useIsMobile } from "./lib/useMediaQuery.js"
 
 const STORAGE_KEY = "chatmaths-session-v1"
-const EXERCISE_BATCH_SIZE = 5
 
 function loadSavedSession() {
   try {
@@ -132,7 +131,6 @@ export default function App() {
   const [sidebarMobileTab, setSidebarMobileTab] = useState("reglages")
   const [serverOnline, setServerOnline] = useState(true)
   const [exportingSession, setExportingSession] = useState(false)
-  const [exerciseProgress, setExerciseProgress] = useState(null)
   const [photoLoading, setPhotoLoading] = useState(false)
   // Dernière photo/PDF d'exercice envoyée : tant qu'elle est active, les messages suivants la
   // renvoient à Claude avec l'historique (voir handleSend) pour qu'il puisse continuer à "voir"
@@ -660,40 +658,33 @@ export default function App() {
     setSidebarOpen(true)
   }
 
+  /** Génère UN exercice (pas cinq d'un coup, voir RAPPORT_MOBILE.md §7 : cinq écrans de
+   * défilement à la fois était l'un des pires contributeurs à la densité mobile). "Exercice
+   * suivant" sous la carte rappelle cette même fonction. Le dédoublonnage ("ne pas reproposer un
+   * énoncé déjà vu") est reconstruit à chaque appel depuis TOUS les exercices déjà présents dans
+   * la conversation (pas seulement ceux d'un "lot") : buildHistoryUpTo ignore les messages de
+   * type "exercise" (voir lib/history.js), donc on les réinjecte nous-mêmes. */
   async function handleExercise() {
     if (!classCode || loading || streaming) return
     setLoading(true)
-    const convId = await ensureConversation().catch(() => null)
-    const total = EXERCISE_BATCH_SIZE
-    setExerciseProgress({ current: 0, total })
-    // On réinjecte chaque exercice déjà généré dans l'historique envoyé au tour suivant,
-    // pour que Claude évite de proposer deux fois le même énoncé dans la série.
-    let history = buildHistoryUpTo(messages)
-    let successCount = 0
-    let gated = false
-    for (let i = 0; i < total; i++) {
-      setExerciseProgress({ current: i + 1, total })
-      try {
-        const exercise = await generateExercise(classCode, chapitre, difficulty, history, convId)
-        pushExerciseMessage(exercise)
-        recordTopicVisit(classCode, exercise.chapter || chapitre, classeNom)
-        const summary =
-          exercise.enonce || (exercise.qcm || []).map((q) => q.question).join(" / ") || `Exercice ${i + 1}`
-        history = [...history, { role: "assistant", content: `Exercice déjà proposé dans cette série : ${summary}` }]
-        successCount++
-      } catch (err) {
-        if (interceptGateError(err)) {
-          gated = true
-          break
-        }
-        // Un échec isolé (hors gate) ne doit pas interrompre le reste de la série.
+    try {
+      const convId = await ensureConversation().catch(() => null)
+      const priorExercises = messages
+        .filter((m) => m.type === "exercise")
+        .map((m, i) => {
+          const summary = m.data?.enonce || (m.data?.qcm || []).map((q) => q.question).join(" / ") || `Exercice ${i + 1}`
+          return { role: "assistant", content: `Exercice déjà proposé dans cette conversation : ${summary}` }
+        })
+      const history = [...buildHistoryUpTo(messages), ...priorExercises]
+      const exercise = await generateExercise(classCode, chapitre, difficulty, history, convId)
+      pushExerciseMessage(exercise)
+      recordTopicVisit(classCode, exercise.chapter || chapitre, classeNom)
+      refreshProfile()
+    } catch (err) {
+      if (!interceptGateError(err)) {
+        pushBotError("Impossible de générer l'exercice pour le moment.")
       }
     }
-    if (successCount === 0 && !gated) {
-      pushBotError("Impossible de générer des exercices pour le moment.")
-    }
-    refreshProfile()
-    setExerciseProgress(null)
     setLoading(false)
   }
 
@@ -1011,7 +1002,12 @@ export default function App() {
               <AnimatePresence initial={false}>
                 {messages.map((msg, i) =>
                   msg.type === "exercise" ? (
-                    <ExerciseCard key={i} exercise={msg.data} />
+                    <ExerciseCard
+                      key={i}
+                      exercise={msg.data}
+                      onNext={i === messages.length - 1 ? handleExercise : null}
+                      generatingNext={i === messages.length - 1 && loading}
+                    />
                   ) : msg.type === "remediation" ? (
                     <RemediationQuiz
                       key={i}
@@ -1054,7 +1050,6 @@ export default function App() {
             canExercise={canGenerateExercise}
             canChapterFeatures={canUseChapterFeatures}
             loading={loading || streaming}
-            exerciseProgress={exerciseProgress}
             exportingSession={exportingSession}
             photoLoading={photoLoading}
             classeNom={classeNom}

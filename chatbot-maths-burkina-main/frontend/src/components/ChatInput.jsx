@@ -82,7 +82,6 @@ export default function ChatInput({
   canExercise,
   canChapterFeatures,
   loading,
-  exerciseProgress,
   exportingSession,
   photoLoading,
   classeNom,
@@ -111,8 +110,6 @@ export default function ChatInput({
     setSheetOpen(false)
     action()
   }
-
-  const exerciseLabel = exerciseProgress ? `Exercice ${exerciseProgress.current}/${exerciseProgress.total}…` : "5 exercices"
 
   return (
     <div className="border-t border-base-300/60 bg-base-100/80 p-3 backdrop-blur-md sm:p-4">
@@ -219,10 +216,10 @@ export default function ChatInput({
           size="sm"
           onClick={onExercise}
           disabled={!canExercise || loading}
-          title={!canExercise ? "Choisis une classe pour générer 5 exercices" : "Chapitre non choisi ? Un chapitre adapté sera proposé automatiquement."}
+          title={!canExercise ? "Choisis une classe pour générer un exercice" : "Chapitre non choisi ? Un chapitre adapté sera proposé automatiquement."}
         >
           <PencilRuler size={14} />
-          {exerciseLabel}
+          Exercice
         </Button>
         <Button
           variant="outline"
@@ -253,7 +250,7 @@ export default function ChatInput({
         <div className="flex flex-col gap-1">
           <SheetAction
             icon={PencilRuler}
-            label={exerciseProgress ? exerciseLabel : "Un exercice"}
+            label="Un exercice"
             hint={!canExercise ? "Choisis une classe pour générer un exercice" : "Chapitre non choisi ? Un chapitre adapté sera proposé automatiquement."}
             onClick={() => runFromSheet(onExercise)}
             disabled={!canExercise || loading}

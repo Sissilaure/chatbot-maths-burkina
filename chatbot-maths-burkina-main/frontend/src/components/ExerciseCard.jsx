@@ -1,6 +1,6 @@
 import React, { useState } from "react"
 import { motion } from "framer-motion"
-import { PencilRuler, Lightbulb, Eye, EyeOff, Sparkles, Star } from "lucide-react"
+import { PencilRuler, Lightbulb, Eye, EyeOff, Sparkles, Star, ArrowRight } from "lucide-react"
 import Card from "./ui/Card"
 import Button from "./ui/Button"
 import Badge from "./ui/Badge"
@@ -38,7 +38,7 @@ function StarRating({ level }) {
   )
 }
 
-export default function ExerciseCard({ exercise }) {
+export default function ExerciseCard({ exercise, onNext, generatingNext }) {
   const [indiceShown, setIndiceShown] = useState(false)
   const [solutionShown, setSolutionShown] = useState(false)
   const [qcmAnswers, setQcmAnswers] = useState({})
@@ -130,6 +130,18 @@ export default function ExerciseCard({ exercise }) {
               )}
             </div>
           </>
+        )}
+
+        {/* Un seul exercice généré à la fois (voir RAPPORT_MOBILE.md §7) : "suivant" remplace la
+            génération en série de 5 d'un coup. N'apparaît que sous le dernier exercice de la
+            conversation (voir App.jsx, onNext=null pour les cartes plus anciennes). */}
+        {onNext && (
+          <div className="mt-4 border-t border-base-300/50 pt-4">
+            <Button variant="outline" size="sm" onClick={onNext} disabled={generatingNext} className="w-full sm:w-auto">
+              {generatingNext ? "Génération…" : "Exercice suivant"}
+              {!generatingNext && <ArrowRight size={14} />}
+            </Button>
+          </div>
         )}
       </Card>
     </motion.div>
