@@ -167,3 +167,16 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* Même logique étendue à une condition de largeur (voir RAPPORT_MOBILE.md §9) : sous 768px, les
+   animations d'ambiance en boucle infinie (halos de fond) coûtent batterie/GPU sur de l'Android
+   bas de gamme sans apporter d'information, même quand l'utilisateur n'a pas activé
+   prefers-reduced-motion. BackgroundBlobs ne se monte déjà plus sous ce seuil ; cette règle est
+   une sécurité si la classe est réutilisée ailleurs. Les animations de retour (chargement,
+   transitions d'interface) ne sont volontairement pas concernées : elles restent un signal utile.*/
+@media (max-width: 767px) {
+  .animate-float-slow,
+  .animate-float-slower {
+    animation: none !important;
+  }
+}
