@@ -7,6 +7,7 @@ import { registerAccount, loginAccount, getMe } from "../api.js"
 const TOKEN_KEY = "chatmaths-auth-token"
 const USERNAME_KEY = "chatmaths-auth-username"
 const ROLE_KEY = "chatmaths-auth-role"
+const PUBLIC_CODE_KEY = "chatmaths-auth-public-code"
 export const AUTH_CHOICE_KEY = "chatmaths-auth-choice"
 
 export function getToken() {
@@ -21,40 +22,51 @@ export function getStoredRole() {
   return localStorage.getItem(ROLE_KEY) || "eleve"
 }
 
-function storeSession(token, username, role) {
+export function getStoredPublicCode() {
+  return localStorage.getItem(PUBLIC_CODE_KEY) || null
+}
+
+function storeSession(token, username, role, publicCode) {
   localStorage.setItem(TOKEN_KEY, token)
   localStorage.setItem(USERNAME_KEY, username)
   localStorage.setItem(ROLE_KEY, role || "eleve")
+  if (publicCode) localStorage.setItem(PUBLIC_CODE_KEY, publicCode)
   localStorage.setItem(AUTH_CHOICE_KEY, "authenticated")
 }
 
-export async function register(username, password) {
-  const { token, username: confirmedUsername, role } = await registerAccount(username, password)
-  storeSession(token, confirmedUsername, role)
-  return { username: confirmedUsername, role }
+/** `profile` : voir registerAccount() dans api.js (classCode/gender/birthYear/isCandidatLibre/
+ * schoolName/region — tous obligatoires sauf schoolName/region pour un candidat libre). */
+export async function register(username, password, profile) {
+  const { token, username: confirmedUsername, role, public_code, consent_ok, profile_complete } =
+    await registerAccount(username, password, profile)
+  storeSession(token, confirmedUsername, role, public_code)
+  return { username: confirmedUsername, role, publicCode: public_code, consentOk: consent_ok, profileComplete: profile_complete }
 }
 
 export async function login(username, password) {
-  const { token, username: confirmedUsername, role } = await loginAccount(username, password)
-  storeSession(token, confirmedUsername, role)
-  return { username: confirmedUsername, role }
+  const { token, username: confirmedUsername, role, public_code, consent_ok, profile_complete } =
+    await loginAccount(username, password)
+  storeSession(token, confirmedUsername, role, public_code)
+  return { username: confirmedUsername, role, publicCode: public_code, consentOk: consent_ok, profileComplete: profile_complete }
 }
 
 export function logout() {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(USERNAME_KEY)
   localStorage.removeItem(ROLE_KEY)
+  localStorage.removeItem(PUBLIC_CODE_KEY)
 }
 
-/** Valide le token stocké auprès du backend ; retourne {username, role} ou null. */
+/** Valide le token stocké auprès du backend ; retourne {username, role, ...} ou null. */
 export async function restoreSession() {
   const token = getToken()
   if (!token) return null
   try {
-    const { username, role } = await getMe(token)
+    const { username, role, public_code, consent_ok, profile_complete } = await getMe(token)
     localStorage.setItem(USERNAME_KEY, username)
     localStorage.setItem(ROLE_KEY, role || "eleve")
-    return { username, role }
+    if (public_code) localStorage.setItem(PUBLIC_CODE_KEY, public_code)
+    return { username, role, publicCode: public_code, consentOk: consent_ok, profileComplete: profile_complete }
   } catch {
     logout()
     return null

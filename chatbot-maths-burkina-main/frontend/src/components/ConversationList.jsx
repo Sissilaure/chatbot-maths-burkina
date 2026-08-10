@@ -1,13 +1,20 @@
-import React from "react"
+import React, { useState } from "react"
 import { motion } from "framer-motion"
-import { History, MessageSquare, Trash2, Plus } from "lucide-react"
+import { History, MessageSquare, Trash2, Plus, FileText } from "lucide-react"
 import Card from "./ui/Card"
 import Button from "./ui/Button"
 import { cn } from "../lib/utils"
+import { getConversation } from "../api.js"
+import { getToken } from "../lib/auth.js"
+import { exportHistoryToDocx } from "../lib/docx.js"
 
-function formatDate(sqliteDatetime) {
-  if (!sqliteDatetime) return ""
-  const date = new Date(sqliteDatetime.replace(" ", "T") + "Z")
+// Postgres/Neon (timestamptz) sérialisé par FastAPI en ISO 8601 avec décalage (ex:
+// "2026-01-15T10:30:00+00:00") — contrairement à l'ancien format SQLite naïf ("YYYY-MM-DD
+// HH:MM:SS", UTC implicite) que ce composant attendait avant la migration ; `new Date(...)`
+// gère nativement le format ISO, plus besoin de reconstituer un suffixe "Z" à la main.
+function formatDate(isoDatetime) {
+  if (!isoDatetime) return ""
+  const date = new Date(isoDatetime)
   if (Number.isNaN(date.getTime())) return ""
   const today = new Date()
   const sameDay = date.toDateString() === today.toDateString()
@@ -17,6 +24,27 @@ function formatDate(sqliteDatetime) {
 }
 
 export default function ConversationList({ conversations, activeConversationId, onSelect, onDelete, onNew }) {
+  const [exportingId, setExportingId] = useState(null)
+
+  /** Télécharge UNE conversation en Word, sans avoir à l'ouvrir au préalable — récupère ses
+   * messages via l'API (contrairement à l'export PDF de la session courante, qui capture le DOM
+   * affiché à l'écran, voir lib/pdf.js). */
+  async function handleExportOne(e, conv) {
+    e.stopPropagation()
+    if (exportingId) return
+    setExportingId(conv.id)
+    try {
+      const detail = await getConversation(getToken(), conv.id)
+      await exportHistoryToDocx([detail], {
+        filename: `chatmaths-${(conv.title || "conversation").slice(0, 40)}.docx`,
+      })
+    } catch {
+      /* échec silencieux ici : pas de zone de toast partagée dans ce composant isolé */
+    } finally {
+      setExportingId(null)
+    }
+  }
+
   return (
     <Card className="p-4">
       <div className="mb-2 flex items-center justify-between">
@@ -49,6 +77,14 @@ export default function ConversationList({ conversations, activeConversationId, 
                 <MessageSquare size={14} className="shrink-0 opacity-60" />
                 <span className="min-w-0 flex-1 truncate">{c.title || "Discussion libre"}</span>
                 <span className="shrink-0 text-xs text-base-content/40">{formatDate(c.updated_at)}</span>
+              </button>
+              <button
+                onClick={(e) => handleExportOne(e, c)}
+                disabled={exportingId === c.id}
+                title="Télécharger cette conversation (Word)"
+                className="shrink-0 rounded-md p-1 text-base-content/30 opacity-0 transition-opacity hover:bg-primary/10 hover:text-primary group-hover:opacity-100 disabled:opacity-100"
+              >
+                <FileText size={13} className={exportingId === c.id ? "animate-pulse" : ""} />
               </button>
               <button
                 onClick={() => onDelete(c.id)}

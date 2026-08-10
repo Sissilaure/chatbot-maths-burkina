@@ -1,9 +1,21 @@
 const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
 
+/** Construit une Error enrichie de `.status` (code HTTP) et `.reason` (voir main.py : les 428
+ * consentement/fiche incomplète renvoient `{detail: {reason, message}}`, les autres erreurs un
+ * `detail` texte simple) — permet à App.jsx de distinguer "il faut afficher un écran de
+ * consentement/complétion de profil" d'une erreur générique à juste afficher en toast. */
+function apiError(status, detail, fallbackMessage) {
+  const message = typeof detail === "string" ? detail : detail?.message
+  const err = new Error(message || fallbackMessage || `Erreur ${status}`)
+  err.status = status
+  if (detail && typeof detail === "object" && detail.reason) err.reason = detail.reason
+  return err
+}
+
 async function handleJson(res, fallbackMessage) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || fallbackMessage || `Erreur ${res.status}`)
+    throw apiError(res.status, err.detail, fallbackMessage)
   }
   return res.json()
 }
@@ -39,8 +51,10 @@ export async function getChapters(classCode) {
  * @param {string} classCode
  * @param {string} chapter
  * @param {Array<{role: 'user'|'assistant', content: string}>} history - derniers échanges pour la mémoire de conversation
+ * @param {string|null} conversationId - si fourni ET l'appelant authentifié, le backend persiste
+ *   lui-même l'échange dans cette conversation (voir add_exchange côté serveur).
  */
-export async function askQuestion(question, classCode, chapter, history = []) {
+export async function askQuestion(question, classCode, chapter, history = [], conversationId = null) {
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -49,6 +63,7 @@ export async function askQuestion(question, classCode, chapter, history = []) {
       class_level: classCode,
       chapter,
       history,
+      conversation_id: conversationId,
     }),
   })
   const data = await handleJson(res, "Erreur lors de la génération de la réponse")
@@ -98,9 +113,14 @@ function mapSources(sources, classCode, chapter) {
  * @param {string} classCode
  * @param {string} chapter
  * @param {Array<{role: 'user'|'assistant', content: string}>} history
- * @param {{onDelta?: (text: string) => void, onDone?: (result: {sources: object[], fromRag: boolean}) => void, onError?: (message: string) => void}} callbacks
+ * @param {string|null} conversationId
+ * @param {{onDelta?: (text: string) => void, onDone?: (result: {sources: object[], fromRag: boolean}) => void, onError?: (err: Error) => void}} callbacks
+ *   `err` passé à onError porte `.status` et, pour un 428, `.reason` ("consent_required" |
+ *   "profile_incomplete") — voir apiError() ci-dessus.
  */
-export async function askQuestionStream(question, classCode, chapter, history = [], { onDelta, onDone, onError } = {}) {
+export async function askQuestionStream(
+  question, classCode, chapter, history = [], conversationId = null, { onDelta, onDone, onError } = {}
+) {
   try {
     const res = await fetch(`${API_BASE}/api/chat/stream`, {
       method: "POST",
@@ -110,12 +130,13 @@ export async function askQuestionStream(question, classCode, chapter, history = 
         class_level: classCode,
         chapter,
         history,
+        conversation_id: conversationId,
       }),
     })
 
     if (!res.ok || !res.body) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.detail || `Erreur ${res.status}`)
+      throw apiError(res.status, err.detail)
     }
 
     const reader = res.body.getReader()
@@ -161,11 +182,11 @@ export async function askQuestionStream(question, classCode, chapter, history = 
 
     onDone?.({ sources: mapSources(sources, classCode, chapter), fromRag })
   } catch (err) {
-    onError?.(err.message || "Erreur pendant la génération de la réponse")
+    onError?.(err)
   }
 }
 
-export async function simplifyResponse(question, previousResponse, classCode, chapter) {
+export async function simplifyResponse(question, previousResponse, classCode, chapter, conversationId = null) {
   const res = await fetch(`${API_BASE}/api/simplify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -174,6 +195,7 @@ export async function simplifyResponse(question, previousResponse, classCode, ch
       class_level: classCode,
       question,
       chapter,
+      conversation_id: conversationId,
     }),
   })
   const data = await handleJson(res, "Erreur lors de la simplification")
@@ -188,12 +210,13 @@ export async function simplifyResponse(question, previousResponse, classCode, ch
  * @param {number|null} difficulty - 1 à 4 étoiles (1 = QCM d'application directe, 4 = situation
  *   d'intégration), ou null pour laisser le serveur déduire un niveau adapté.
  * @param {Array<{role: 'user'|'assistant', content: string}>} history
+ * @param {string|null} conversationId
  */
-export async function generateExercise(classCode, chapter, difficulty = null, history = []) {
+export async function generateExercise(classCode, chapter, difficulty = null, history = [], conversationId = null) {
   const res = await fetch(`${API_BASE}/api/exercise`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ class_level: classCode, chapter, difficulty, history }),
+    body: JSON.stringify({ class_level: classCode, chapter, difficulty, history, conversation_id: conversationId }),
   })
   return handleJson(res, "Erreur lors de la génération de l'exercice")
 }
@@ -205,9 +228,10 @@ export async function generateExercise(classCode, chapter, difficulty = null, hi
  * tapée par l'élève en même temps que sa photo (ex: "vérifie juste la question 2").
  * `history` (facultatif) : renvoyer la MÊME photo avec les échanges déjà tenus à son sujet,
  * pour les questions de suivi (ex: "résous la question a") — voir App.jsx::activePhoto.
- * Envoyé en champ de formulaire (pas en query string, qui a une limite de taille).
+ * `conversationId` (facultatif) : persistance serveur, envoyée en champ de formulaire.
+ * Envoyés en champs de formulaire (pas en query string, qui a une limite de taille).
  */
-export async function explainExercisePhoto(file, classCode = "", chapter = "", prompt = "", history = []) {
+export async function explainExercisePhoto(file, classCode = "", chapter = "", prompt = "", history = [], conversationId = null) {
   const params = new URLSearchParams()
   if (classCode) params.set("class_level", classCode)
   if (chapter) params.set("chapter", chapter)
@@ -216,6 +240,7 @@ export async function explainExercisePhoto(file, classCode = "", chapter = "", p
   const formData = new FormData()
   formData.append("file", file)
   if (history.length > 0) formData.append("history", JSON.stringify(history))
+  if (conversationId) formData.append("conversation_id", conversationId)
 
   const res = await fetch(`${API_BASE}/api/exercise/photo?${params.toString()}`, {
     method: "POST",
@@ -228,11 +253,11 @@ export async function explainExercisePhoto(file, classCode = "", chapter = "", p
 /**
  * QCM diagnostique de remédiation (8 questions) sur le chapitre choisi.
  */
-export async function generateRemediation(classCode, chapter, history = []) {
+export async function generateRemediation(classCode, chapter, history = [], conversationId = null) {
   const res = await fetch(`${API_BASE}/api/remediation`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ class_level: classCode, chapter, history }),
+    body: JSON.stringify({ class_level: classCode, chapter, history, conversation_id: conversationId }),
   })
   return handleJson(res, "Erreur lors de la génération du QCM de remédiation")
 }
@@ -261,11 +286,11 @@ export async function checkCourseAvailable(classCode, chapter) {
  * Résumé des points essentiels : de la séance en cours si des échanges existent,
  * sinon du chapitre choisi.
  */
-export async function getSummary(history, classCode, chapter) {
+export async function getSummary(history, classCode, chapter, conversationId = null) {
   const res = await fetch(`${API_BASE}/api/summary`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ history, class_level: classCode, chapter }),
+    body: JSON.stringify({ history, class_level: classCode, chapter, conversation_id: conversationId }),
   })
   const data = await handleJson(res, "Erreur lors de la génération du résumé")
   return data.content
@@ -275,11 +300,28 @@ export async function getSummary(history, classCode, chapter) {
 // Comptes élèves (auth optionnelle) : inscription/connexion, historique, accueil
 // ---------------------------------------------------------------------------
 
-export async function registerAccount(username, password) {
+/**
+ * Crée un compte. `profile` regroupe les champs de fiche désormais obligatoires à l'inscription
+ * (voir RegisterRequest côté backend) : class_code, gender ('F'/'M'), birth_year,
+ * is_candidat_libre, school_name (ignoré/absent si is_candidat_libre), region (facultatif).
+ * Le compte n'est créé qu'à cet appel — jamais avant, voir AuthGate.jsx (envoi unique en fin
+ * de formulaire, pas de compte partiel créé si l'élève abandonne en cours de route).
+ */
+export async function registerAccount(username, password, profile) {
   const res = await fetch(`${API_BASE}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({
+      username,
+      password,
+      class_code: profile.classCode,
+      gender: profile.gender,
+      birth_year: profile.birthYear,
+      is_candidat_libre: profile.isCandidatLibre,
+      school_name: profile.isCandidatLibre ? null : profile.schoolName,
+      region: profile.region || null,
+      consent_accepted: true,
+    }),
   })
   return handleJson(res, "Erreur lors de l'inscription")
 }
@@ -296,6 +338,43 @@ export async function loginAccount(username, password) {
 export async function getMe(token) {
   const res = await fetch(`${API_BASE}/api/auth/me`, { headers: authHeaders(token) })
   return handleJson(res, "Session invalide")
+}
+
+// ---- Consentement ----
+
+/** Texte + version courante du consentement (public, pas besoin d'être connecté). */
+export async function getConsent() {
+  const res = await fetch(`${API_BASE}/api/consent`)
+  return handleJson(res, "Erreur chargement du texte de consentement")
+}
+
+/** Enregistre l'acceptation du consentement courant pour le compte connecté — sert aux comptes
+ * migrés depuis l'ancienne base (voir ConsentNotice.jsx). */
+export async function acceptConsent(token) {
+  const res = await fetch(`${API_BASE}/api/consent/accept`, { method: "POST", headers: authHeaders(token) })
+  return handleJson(res, "Erreur lors de l'enregistrement du consentement")
+}
+
+// ---- Établissements (autocomplétion) ----
+
+export async function searchSchools(query) {
+  const res = await fetch(`${API_BASE}/api/schools/search?q=${encodeURIComponent(query)}`)
+  const data = await handleJson(res, "Erreur recherche d'établissement")
+  return data.schools // [{id, name, city, region, is_verified}]
+}
+
+// ---- Complétion de profil (comptes migrés) ----
+
+/** Complète/corrige la fiche d'un compte déjà existant — utilisée par ProfileCompletionGate.jsx
+ * (comptes migrés) et par ProfilePanel pour une correction ponctuelle. `fields` ne contient que
+ * les clés à modifier (mise à jour partielle, voir PATCH /api/profile côté serveur). */
+export async function updateProfile(token, fields) {
+  const res = await fetch(`${API_BASE}/api/profile`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify(fields),
+  })
+  return handleJson(res, "Erreur lors de la mise à jour du profil")
 }
 
 export async function listConversations(token) {
@@ -327,21 +406,12 @@ export async function deleteConversation(token, conversationId) {
   return handleJson(res, "Erreur suppression de la conversation")
 }
 
-/** Persiste un message côté serveur (fire-and-forget côté appelant) : mêmes champs que les
- * objets `messages` déjà utilisés côté frontend (type, text, sources, kind, data). */
-export async function appendMessage(token, conversationId, message) {
-  const res = await fetch(`${API_BASE}/api/conversations/${conversationId}/messages`, {
-    method: "POST",
-    headers: authHeaders(token),
-    body: JSON.stringify({
-      type: message.type,
-      text: message.text ?? null,
-      kind: message.kind ?? null,
-      sources: message.sources || [],
-      data: message.data ?? null,
-    }),
-  })
-  return handleJson(res, "Erreur enregistrement du message")
+/** Tout l'historique de l'élève connecté (toutes conversations), pour l'export Word global —
+ * voir lib/docx.js::exportHistoryToDocx et ConversationList.jsx. */
+export async function exportHistory(token) {
+  const res = await fetch(`${API_BASE}/api/export/history`, { headers: authHeaders(token) })
+  const data = await handleJson(res, "Erreur lors de l'export de l'historique")
+  return data.conversations
 }
 
 export async function postRemediationResults(token, classCode, chapter, answers) {
@@ -411,4 +481,9 @@ export async function getAdminActivity(token, classLevel = "") {
   const res = await fetch(`${API_BASE}/api/admin/activity${adminQuery(classLevel)}`, { headers: authHeaders(token) })
   const data = await handleJson(res, "Erreur chargement de l'activité")
   return data.activity
+}
+
+export async function getAdminDemographics(token, classLevel = "") {
+  const res = await fetch(`${API_BASE}/api/admin/demographics${adminQuery(classLevel)}`, { headers: authHeaders(token) })
+  return handleJson(res, "Erreur chargement des données démographiques")
 }

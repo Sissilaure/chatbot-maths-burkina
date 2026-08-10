@@ -38,7 +38,9 @@ export default function ProfilePanel({ profile, onResumeTopic, onReviewStruggle,
                 key={t.key}
                 onClick={() => onResumeTopic(t)}
                 className="rounded-lg border border-base-300/60 bg-base-100 px-3 py-2 text-left text-sm transition-colors hover:border-primary/50 hover:bg-primary/5"
-                title={`${t.count} question(s) posée(s) — ${timeAgo(t.lastVisited)}`}
+                // database.get_recent_topics (Postgres) ne fournit plus de compteur de visites
+                // (contrairement à l'ancien schéma SQLite) : on n'affiche que la fraîcheur.
+                title={`Dernière visite ${timeAgo(t.lastVisited)}`}
               >
                 <span className="font-medium">{t.classeNom || t.classCode || "Classe libre"}</span>
                 {t.chapitre && <span className="text-base-content/60"> · {t.chapitre}</span>}

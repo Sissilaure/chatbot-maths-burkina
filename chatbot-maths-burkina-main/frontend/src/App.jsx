@@ -17,7 +17,7 @@ import {
   createConversation,
   getConversation,
   deleteConversation,
-  appendMessage,
+  exportHistory,
   postRemediationResults,
   postStruggle,
   getGreeting,
@@ -34,11 +34,13 @@ import WelcomeCard from "./components/WelcomeCard.jsx"
 import VideoGuide from "./components/VideoGuide.jsx"
 import BackgroundBlobs from "./components/BackgroundBlobs.jsx"
 import AuthGate from "./components/AuthGate.jsx"
+import ConsentGate from "./components/ConsentGate.jsx"
+import ProfileCompletionGate from "./components/ProfileCompletionGate.jsx"
 import AdminDashboard from "./components/AdminDashboard.jsx"
 import Button from "./components/ui/Button.jsx"
 import ExportMenu from "./components/ExportMenu.jsx"
 import { exportNodeToPDF } from "./lib/pdf.js"
-import { exportMessagesToDocx } from "./lib/docx.js"
+import { exportMessagesToDocx, exportHistoryToDocx } from "./lib/docx.js"
 import { compressImageFile } from "./lib/image.js"
 import { getProfile, recordTopicVisit, recordStruggle, dismissStruggle, clearProfile } from "./lib/profile.js"
 import { getToken, logout as authLogout, restoreSession, AUTH_CHOICE_KEY } from "./lib/auth.js"
@@ -96,6 +98,11 @@ export default function App() {
   })
   const [user, setUser] = useState(null)
   const [role, setRole] = useState(null)
+  // Portes bloquantes pour un compte migré depuis l'ancienne base SQLite (voir
+  // migrate_sqlite_to_pg.py) : consentement pas à jour et/ou fiche incomplète. Toujours True par
+  // défaut — un invité (user=null) n'active jamais ces écrans, voir le rendu conditionnel plus bas.
+  const [consentOk, setConsentOk] = useState(true)
+  const [profileComplete, setProfileComplete] = useState(true)
   const [conversations, setConversations] = useState([])
   const [activeConversationId, setActiveConversationId] = useState(null)
   const [greetingMessage, setGreetingMessage] = useState(null)
@@ -130,11 +137,13 @@ export default function App() {
 
   const chatRef = useRef(null)
   const sessionContentRef = useRef(null)
-  // Miroir synchrone de activeConversationId : évite qu'un message user + un message bot
-  // envoyés coup sur coup (avant le re-render qui propage le state) créent chacun leur
-  // propre conversation faute de voir l'id déjà en cours de création.
+  // Miroir synchrone de activeConversationId, lu par ensureConversation()/setActiveConv() sans
+  // attendre le re-render. Le backend persiste désormais lui-même chaque échange (question +
+  // réponse) en une seule requête (voir conversation_id transmis à chaque appel API ci-dessous) :
+  // il n'y a donc plus qu'UN SEUL appel à ensureConversation() par action élève (au lieu de deux
+  // avant, un pour le message élève et un pour la réponse), ce qui élimine la course qui
+  // nécessitait auparavant un verrou supplémentaire (creatingConversationRef, supprimé).
   const activeConversationIdRef = useRef(null)
-  const creatingConversationRef = useRef(null)
   const classeNom = classes.find((c) => c.code === classCode)?.name || ""
 
   useEffect(() => {
@@ -221,6 +230,8 @@ export default function App() {
       if (session) {
         setUser(session.username)
         setRole(session.role)
+        setConsentOk(session.consentOk !== false)
+        setProfileComplete(session.profileComplete !== false)
       } else {
         setShowAuthGate(true)
       }
@@ -367,52 +378,49 @@ export default function App() {
     setLastAnswer(la)
   }
 
-  /** Crée la conversation serveur au tout premier message si elle n'existe pas encore
-   * (pas de ligne vide créée pour un élève connecté qui ne discute jamais). Dédoublonne les
-   * appels concurrents (ex: message user + message bot envoyés coup sur coup) sur la même
-   * promesse de création plutôt que de créer deux conversations en parallèle. */
+  /** Crée la conversation serveur au tout premier message si elle n'existe pas encore (pas de
+   * ligne vide créée pour un élève connecté qui ne discute jamais). Le backend persiste ensuite
+   * lui-même chaque échange dans cette conversation (voir conversation_id transmis par
+   * handleSend/handleExercise/etc.), donc plus besoin d'un verrou anti-doublon ici : un seul
+   * appel par action, jamais deux en parallèle pour le même tour de conversation. */
   async function ensureConversation() {
     if (!user) return null
     if (activeConversationIdRef.current) return activeConversationIdRef.current
 
-    if (!creatingConversationRef.current) {
-      creatingConversationRef.current = (async () => {
-        const token = getToken()
-        const id = await createConversation(token, classCode, chapitre)
-        setActiveConv(id)
-        setConversations((prev) => [
-          { id, title: classCode && chapitre ? `${classCode} · ${chapitre}` : "Discussion libre", class_level: classCode, chapter: chapitre, updated_at: new Date().toISOString() },
-          ...prev,
-        ])
-        return id
-      })().finally(() => {
-        creatingConversationRef.current = null
-      })
-    }
-    return creatingConversationRef.current
+    const token = getToken()
+    const id = await createConversation(token, classCode, chapitre)
+    setActiveConv(id)
+    setConversations((prev) => [
+      { id, title: classCode && chapitre ? `${classCode} · ${chapitre}` : "Discussion libre", class_level: classCode, chapter: chapitre, updated_at: new Date().toISOString() },
+      ...prev,
+    ])
+    return id
   }
 
-  /** Persiste un message côté serveur pour un élève connecté ; best-effort (n'interrompt
-   * jamais l'expérience de chat si la sauvegarde échoue). */
-  async function persistMessage(message) {
-    if (!user) return
-    try {
-      const id = await ensureConversation()
-      if (!id) return
-      const result = await appendMessage(getToken(), id, message)
-      // Le serveur renomme la conversation avec le début de la première question posée (voir
-      // database.add_message) : on répercute ce nouveau titre dans la liste affichée.
-      if (result?.title) {
-        setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title: result.title } : c)))
-      }
-    } catch {
-      /* la conversation reste utilisable localement même si la sauvegarde échoue */
+  /** Bascule vers l'écran de consentement/complétion de fiche si l'API signale qu'un compte
+   * connecté n'est pas à jour (comptes migrés depuis SQLite, voir migrate_sqlite_to_pg.py) :
+   * consentOk/profileComplete sont normalement déjà corrects juste après login/restoreSession,
+   * ce filet de sécurité couvre le cas où l'état serveur aurait changé entre-temps. Retourne
+   * true si l'erreur a été absorbée (l'appelant ne doit alors PAS afficher son propre message
+   * d'erreur générique par-dessus). */
+  function interceptGateError(err) {
+    if (err?.status !== 428) return false
+    if (err.reason === "consent_required") {
+      setConsentOk(false)
+      return true
     }
+    if (err.reason === "profile_incomplete") {
+      setProfileComplete(false)
+      return true
+    }
+    return false
   }
 
-  function handleAuthenticated({ username, role: userRole }) {
+  function handleAuthenticated({ username, role: userRole, consentOk: sessionConsentOk, profileComplete: sessionProfileComplete }) {
     setUser(username)
     setRole(userRole)
+    setConsentOk(sessionConsentOk !== false)
+    setProfileComplete(sessionProfileComplete !== false)
     setShowAuthGate(false)
   }
 
@@ -430,6 +438,8 @@ export default function App() {
     localStorage.setItem(AUTH_CHOICE_KEY, "guest")
     setUser(null)
     setRole(null)
+    setConsentOk(true)
+    setProfileComplete(true)
     setConversations([])
     setActiveConv(null)
     setGreetingMessage(null)
@@ -498,7 +508,10 @@ export default function App() {
 
     setQuestion("")
     pushUserMessage(q)
-    persistMessage({ type: "user", text: q, sources: [] })
+
+    // Résolu une seule fois avant l'appel (voir ensureConversation) : le serveur persiste
+    // désormais lui-même la question ET la réponse en une requête, via ce conversation_id.
+    const convId = await ensureConversation().catch(() => null)
 
     // Une photo d'exercice est "active" (envoyée plus tôt dans cette conversation, jamais
     // remplacée depuis) : on la renvoie avec ce message plutôt que de faire un chat texte normal,
@@ -507,15 +520,16 @@ export default function App() {
     if (activePhoto) {
       setLoading(true)
       try {
-        const answer = await explainExercisePhoto(activePhoto, sendClassCode, sendChapitre, q, history)
+        const answer = await explainExercisePhoto(activePhoto, sendClassCode, sendChapitre, q, history, convId)
         pushBotMessage(answer, [], "chat")
-        persistMessage({ type: "bot", text: answer, sources: [], kind: "chat" })
         setLastQuestion(q)
         setLastAnswer(answer)
         recordTopicVisit(sendClassCode, sendChapitre, sendClasseNom)
         refreshProfile()
       } catch (err) {
-        pushBotError("Impossible de continuer sur cette photo pour le moment. Réessaie, ou renvoie la photo.")
+        if (!interceptGateError(err)) {
+          pushBotError("Impossible de continuer sur cette photo pour le moment. Réessaie, ou renvoie la photo.")
+        }
       } finally {
         setLoading(false)
       }
@@ -531,7 +545,7 @@ export default function App() {
     let firstChunk = true
 
     try {
-      await askQuestionStream(q, sendClassCode, sendChapitre, history, {
+      await askQuestionStream(q, sendClassCode, sendChapitre, history, convId, {
         onDelta: (delta) => {
           if (firstChunk) {
             setLoading(false)
@@ -544,11 +558,15 @@ export default function App() {
           patchLastMessage((last) => ({ ...last, sources, streaming: false }))
           setLastQuestion(q)
           setLastAnswer(fullText)
-          persistMessage({ type: "bot", text: fullText, sources, kind: "chat" })
           recordTopicVisit(sendClassCode, sendChapitre, sendClasseNom)
           refreshProfile()
         },
-        onError: (message) => {
+        onError: (err) => {
+          if (interceptGateError(err)) {
+            patchLastMessage((last) => ({ ...last, streaming: false, text: fullText }))
+            return
+          }
+          const message = err?.message
           patchLastMessage((last) => ({
             ...last,
             streaming: false,
@@ -571,8 +589,10 @@ export default function App() {
     setRegeneratingIndex(index)
     patchMessageAt(index, { text: "", sources: [], kind: "chat", streaming: true })
 
+    // conversationId=null : une régénération ne réécrit pas l'historique déjà persisté, elle
+    // remplace juste ce qui est affiché à l'écran (voir MessageBubble::onRegenerate).
     let fullText = ""
-    await askQuestionStream(userMsg.text, classCode, chapitre, history, {
+    await askQuestionStream(userMsg.text, classCode, chapitre, history, null, {
       onDelta: (delta) => {
         fullText += delta
         patchMessageAt(index, { text: fullText })
@@ -582,9 +602,11 @@ export default function App() {
         setLastQuestion(userMsg.text)
         setLastAnswer(fullText)
       },
-      onError: () => {
+      onError: (err) => {
         patchMessageAt(index, { streaming: false, text: fullText || "" })
-        pushBotError("Impossible de régénérer cette réponse pour le moment.")
+        if (!interceptGateError(err)) {
+          pushBotError("Impossible de régénérer cette réponse pour le moment.")
+        }
       },
     })
 
@@ -595,15 +617,17 @@ export default function App() {
     if (!lastAnswer || loading || streaming) return
     setLoading(true)
     try {
-      const simplified = await simplifyResponse(lastQuestion, lastAnswer, classCode, chapitre)
+      const convId = await ensureConversation().catch(() => null)
+      const simplified = await simplifyResponse(lastQuestion, lastAnswer, classCode, chapitre, convId)
       pushBotMessage(simplified, [], "simplify")
-      persistMessage({ type: "bot", text: simplified, kind: "simplify" })
       setLastAnswer(simplified)
       recordStruggle(classCode, chapitre, lastQuestion, classeNom)
       if (user) postStruggle(getToken(), classCode, chapitre, lastQuestion).catch(() => {})
       refreshProfile()
     } catch (err) {
-      pushBotError("Impossible de simplifier la réponse pour le moment.")
+      if (!interceptGateError(err)) {
+        pushBotError("Impossible de simplifier la réponse pour le moment.")
+      }
     }
     setLoading(false)
   }
@@ -611,28 +635,33 @@ export default function App() {
   async function handleExercise() {
     if (!classCode || loading || streaming) return
     setLoading(true)
+    const convId = await ensureConversation().catch(() => null)
     const total = EXERCISE_BATCH_SIZE
     setExerciseProgress({ current: 0, total })
     // On réinjecte chaque exercice déjà généré dans l'historique envoyé au tour suivant,
     // pour que Claude évite de proposer deux fois le même énoncé dans la série.
     let history = buildHistoryUpTo(messages)
     let successCount = 0
+    let gated = false
     for (let i = 0; i < total; i++) {
       setExerciseProgress({ current: i + 1, total })
       try {
-        const exercise = await generateExercise(classCode, chapitre, difficulty, history)
+        const exercise = await generateExercise(classCode, chapitre, difficulty, history, convId)
         pushExerciseMessage(exercise)
-        persistMessage({ type: "exercise", data: exercise })
         recordTopicVisit(classCode, exercise.chapter || chapitre, classeNom)
         const summary =
           exercise.enonce || (exercise.qcm || []).map((q) => q.question).join(" / ") || `Exercice ${i + 1}`
         history = [...history, { role: "assistant", content: `Exercice déjà proposé dans cette série : ${summary}` }]
         successCount++
       } catch (err) {
-        // Un échec isolé ne doit pas interrompre le reste de la série.
+        if (interceptGateError(err)) {
+          gated = true
+          break
+        }
+        // Un échec isolé (hors gate) ne doit pas interrompre le reste de la série.
       }
     }
-    if (successCount === 0) {
+    if (successCount === 0 && !gated) {
       pushBotError("Impossible de générer des exercices pour le moment.")
     }
     refreshProfile()
@@ -658,16 +687,11 @@ export default function App() {
     // que les vraies images, un PDF envoyé apparaît juste comme un message texte.
     const imageUrl = isImage ? URL.createObjectURL(file) : null
     pushUserMessage(displayText, imageUrl)
-    persistMessage({
-      type: "user",
-      text: accompanyingPrompt || (isImage ? "[Photo d'exercice envoyée]" : `[Fichier envoyé : ${file.name}]`),
-      sources: [],
-    })
+    const convId = await ensureConversation().catch(() => null)
     try {
       const toSend = isImage ? await compressImageFile(file) : file
-      const answer = await explainExercisePhoto(toSend, classCode, chapitre, accompanyingPrompt)
+      const answer = await explainExercisePhoto(toSend, classCode, chapitre, accompanyingPrompt, [], convId)
       pushBotMessage(answer, [], "chat")
-      persistMessage({ type: "bot", text: answer, sources: [], kind: "chat" })
       setLastQuestion(accompanyingPrompt || "Photo d'exercice envoyée")
       setLastAnswer(answer)
       // Reste "active" pour les messages suivants (voir handleSend) : Claude pourra continuer à
@@ -677,7 +701,9 @@ export default function App() {
       if (classCode) recordTopicVisit(classCode, chapitre, classeNom)
       refreshProfile()
     } catch (err) {
-      pushBotError("Impossible d'analyser ce fichier pour le moment. Réessaie avec une photo plus nette et bien cadrée, ou un autre fichier.")
+      if (!interceptGateError(err)) {
+        pushBotError("Impossible d'analyser ce fichier pour le moment. Réessaie avec une photo plus nette et bien cadrée, ou un autre fichier.")
+      }
     }
     setPhotoLoading(false)
   }
@@ -697,13 +723,15 @@ export default function App() {
     setLoading(true)
     try {
       const history = buildHistoryUpTo(messages)
-      const remediation = await generateRemediation(classCode, chapitre, history)
+      const convId = await ensureConversation().catch(() => null)
+      const remediation = await generateRemediation(classCode, chapitre, history, convId)
       pushRemediationMessage(remediation)
-      persistMessage({ type: "remediation", data: remediation })
       recordTopicVisit(classCode, chapitre, classeNom)
       refreshProfile()
     } catch (err) {
-      pushBotError("Impossible de générer le QCM de remédiation pour le moment.")
+      if (!interceptGateError(err)) {
+        pushBotError("Impossible de générer le QCM de remédiation pour le moment.")
+      }
     }
     setLoading(false)
   }
@@ -713,11 +741,13 @@ export default function App() {
     setLoading(true)
     try {
       const history = buildHistoryUpTo(messages)
-      const content = await getSummary(history, classCode, chapitre)
+      const convId = await ensureConversation().catch(() => null)
+      const content = await getSummary(history, classCode, chapitre, convId)
       pushBotMessage(content, [], "summary")
-      persistMessage({ type: "bot", text: content, kind: "summary" })
     } catch (err) {
-      pushBotError("Impossible de générer le résumé pour le moment.")
+      if (!interceptGateError(err)) {
+        pushBotError("Impossible de générer le résumé pour le moment.")
+      }
     }
     setLoading(false)
   }
@@ -787,6 +817,29 @@ export default function App() {
     }
   }
 
+  /** Export Word de TOUT l'historique de l'élève connecté (toutes conversations), pas seulement
+   * la session à l'écran (voir handleDownloadSession, ci-dessus, pour l'export de la session
+   * courante en PDF/Word) — voir ConversationList.jsx et ExportMenu.jsx. */
+  async function handleDownloadFullHistory() {
+    if (!user || exportingSession) return
+    setExportingSession(true)
+    try {
+      const conversations = await exportHistory(getToken())
+      if (conversations.length === 0) {
+        showToast("Aucun historique à exporter pour l'instant.", "error")
+        return
+      }
+      const filename = `chatmaths-historique-complet-${Date.now()}.docx`
+      await exportHistoryToDocx(conversations, { filename, title: "Prof Amira — Historique complet" })
+      showToast(`Fichier téléchargé : ${filename} (dossier Téléchargements)`, "success")
+    } catch (err) {
+      console.error("Export de l'historique échoué:", err)
+      showToast("Le téléchargement a échoué. Réessaie, ou recharge la page si le problème persiste.", "error")
+    } finally {
+      setExportingSession(false)
+    }
+  }
+
   // Le chapitre est facultatif pour générer un exercice (le serveur en choisit un lui-même sinon) :
   // seule la classe est nécessaire. Voir le cours et la remédiation ciblent un chapitre précis,
   // donc restent conditionnés aux deux.
@@ -804,6 +857,16 @@ export default function App() {
 
   if (showAuthGate) {
     return <AuthGate onAuthenticated={handleAuthenticated} onContinueAsGuest={handleContinueAsGuest} />
+  }
+
+  // Comptes migrés depuis l'ancienne base SQLite (voir migrate_sqlite_to_pg.py) uniquement : un
+  // invité (user === null) ne passe jamais par ici, ces deux états restant à leur valeur par
+  // défaut (true) tant qu'aucun compte n'est connecté.
+  if (user && !consentOk) {
+    return <ConsentGate token={getToken()} onAccepted={() => setConsentOk(true)} />
+  }
+  if (user && !profileComplete) {
+    return <ProfileCompletionGate token={getToken()} onComplete={() => setProfileComplete(true)} />
   }
 
   if (role === "decideur") {
@@ -893,7 +956,12 @@ export default function App() {
                 {classeNom ? `${classeNom}${chapitre ? " · " + chapitre : ""}` : "Discussion libre"}
               </p>
             </div>
-            <ExportMenu onExport={handleDownloadSession} exporting={exportingSession} label="Télécharger" />
+            <ExportMenu
+              onExport={handleDownloadSession}
+              onExportHistory={user ? handleDownloadFullHistory : undefined}
+              exporting={exportingSession}
+              label="Télécharger"
+            />
           </div>
 
           <div ref={chatRef} className="scrollbar-thin flex-1 overflow-y-auto p-4 sm:p-6">

@@ -6,12 +6,11 @@ Usage :
     python create_decideur.py
 """
 import getpass
-import sqlite3
 
 import auth
 import database
 
-MIN_PASSWORD_LENGTH = 6
+MIN_PASSWORD_LENGTH = 8  # aligné sur MIN_PASSWORD_LENGTH côté serveur (voir main.py)
 
 
 def main():
@@ -30,13 +29,17 @@ def main():
         print("Les deux mots de passe ne correspondent pas.")
         return
 
-    try:
-        user_id = database.create_user(username, auth.hash_password(password), role="decideur")
-    except sqlite3.IntegrityError:
+    # Un décideur n'a pas de fiche élève (classe/genre/consentement...) : create_user() sans ces
+    # arguments les laisse à NULL, ce qui est attendu pour ce rôle.
+    user = database.create_user(username, auth.hash_password(password), role="decideur")
+    if not user:
         print(f"Le nom d'utilisateur « {username} » est déjà pris.")
         return
 
-    print(f"Compte décideur « {username} » créé (id={user_id}). Il peut se connecter via l'onglet Connexion de l'appli.")
+    print(
+        f"Compte décideur « {username} » créé (code {user['public_code']}). "
+        "Il peut se connecter via l'onglet Connexion de l'appli."
+    )
 
 
 if __name__ == "__main__":

@@ -1,12 +1,15 @@
 import React, { useState } from "react"
-import { FileDown, FileText, ChevronDown } from "lucide-react"
+import { FileDown, FileText, ChevronDown, History } from "lucide-react"
 import Button from "./ui/Button"
 
 /**
- * Bouton "Télécharger" avec un petit menu pour choisir le format (PDF ou Word).
+ * Bouton "Télécharger" avec un petit menu pour choisir le format (PDF ou Word). `onExportHistory`
+ * est facultatif : quand fourni (élève connecté, voir App.jsx::handleDownloadFullHistory), une
+ * troisième entrée "Tout mon historique (Word)" apparaît, distincte de l'export de la SEULE
+ * session à l'écran (onExport).
  * Se ferme automatiquement quand le focus quitte le composant (clic ailleurs, Échap+Tab...).
  */
-export default function ExportMenu({ onExport, exporting, label = "Télécharger", align = "right" }) {
+export default function ExportMenu({ onExport, onExportHistory, exporting, label = "Télécharger", align = "right" }) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -54,6 +57,18 @@ export default function ExportMenu({ onExport, exporting, label = "Télécharger
           >
             <FileText size={14} /> Word (.docx)
           </button>
+          {onExportHistory && (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 border-t border-base-300/60 px-3 py-2 text-left text-sm hover:bg-base-200"
+              onClick={() => {
+                setOpen(false)
+                onExportHistory()
+              }}
+            >
+              <History size={14} /> Tout mon historique (Word)
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -13,7 +13,9 @@ llama-index-embeddings-huggingface==0.2.0
 # tout le reste de la pile est fige sur la ligne 0.10.x (voir la note huggingface-hub ci-dessous) —
 # une résolution automatique tire alors une chaîne de mises à jour incompatibles en cascade.
 llama-index-vector-stores-postgres==0.1.11
-psycopg[binary]>=3.1
+# Extra "pool" : expose psycopg_pool.ConnectionPool, utilisé par database.py pour les données
+# applicatives (comptes/conversations), séparément des connexions ponctuelles du RAG.
+psycopg[binary,pool]>=3.1
 # Épinglé : sans ça, pip essaie de résoudre parmi des dizaines de versions 1.x récentes qui ont
 # supprimé l'extra "inference" attendu par llama-index-embeddings-huggingface==0.2.0, et remonte
 # très lentement (voire échoue) jusqu'à une version compatible comme celle-ci.

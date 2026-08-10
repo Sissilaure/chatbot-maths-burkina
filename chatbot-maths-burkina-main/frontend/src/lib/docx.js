@@ -115,6 +115,10 @@ export async function exportMessagesToDocx(messages, { filename = "chatmaths.doc
   })
 
   const blob = await Packer.toBlob(doc)
+  triggerDownload(blob, filename)
+}
+
+function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url
@@ -123,4 +127,69 @@ export async function exportMessagesToDocx(messages, { filename = "chatmaths.doc
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+/** Convertit un message serveur ({role, kind, content, payload} — voir database.py) en
+ * paragraphes Word. Distinct de exportMessagesToDocx ci-dessus, qui part des objets `messages`
+ * du frontend ({type, text, data}) : la forme des messages diffère entre les deux (voir
+ * GET /api/export/history côté API). */
+function historyMessageToParagraphs(docxLib, msg) {
+  const { Paragraph, TextRun } = docxLib
+  const label = msg.role === "user" ? "Élève" : "Prof Amira"
+  const color = msg.role === "user" ? "0D9488" : "9333EA"
+  const out = [
+    new Paragraph({ children: [new TextRun({ text: label, bold: true, color })], spacing: { before: 160, after: 60 } }),
+  ]
+
+  const payload = msg.payload || {}
+  if (msg.kind === "exercise") {
+    out.push(...markdownToParagraphs(docxLib, payload.enonce || msg.content))
+    if (Array.isArray(payload.qcm) && payload.qcm.length > 0) {
+      out.push(...qcmParagraphs(docxLib, payload.qcm))
+    } else if (payload.solution) {
+      out.push(new Paragraph({ children: [new TextRun({ text: "Solution", bold: true })], spacing: { before: 100 } }))
+      out.push(...markdownToParagraphs(docxLib, payload.solution))
+    }
+  } else if (msg.kind === "remediation" && Array.isArray(payload.questions)) {
+    out.push(...qcmParagraphs(docxLib, payload.questions))
+  } else {
+    out.push(...markdownToParagraphs(docxLib, msg.content || ""))
+  }
+  return out
+}
+
+/**
+ * Exporte TOUT l'historique d'un élève (toutes conversations, voir GET /api/export/history) en
+ * un seul document Word — un titre de niveau 1 par conversation. Distinct de
+ * exportMessagesToDocx (une seule session, objets frontend) : ici la source est directement la
+ * réponse serveur (voir api.js::exportHistory), pas l'état React `messages`.
+ */
+export async function exportHistoryToDocx(conversations, { filename = "chatmaths-historique.docx", title = "" } = {}) {
+  const docxLib = await import("docx")
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel } = docxLib
+
+  const children = []
+  if (title) children.push(new Paragraph({ text: title, heading: HeadingLevel.TITLE }))
+
+  for (const conv of conversations) {
+    const subtitle = [conv.class_code, conv.chapter].filter(Boolean).join(" · ")
+    children.push(
+      new Paragraph({ text: conv.title || "Conversation", heading: HeadingLevel.HEADING_1, spacing: { before: 360, after: 80 } })
+    )
+    if (subtitle) {
+      children.push(new Paragraph({ children: [new TextRun({ text: subtitle, color: "64748B" })], spacing: { after: 200 } }))
+    }
+    for (const msg of conv.messages || []) {
+      children.push(...historyMessageToParagraphs(docxLib, msg))
+    }
+  }
+
+  const doc = new Document({
+    title: title || "Historique ChatMaths Burkina",
+    description: "Export complet de l'historique — ChatMaths Burkina",
+    sections: [{ children }],
+  })
+
+  const blob = await Packer.toBlob(doc)
+  triggerDownload(blob, filename)
 }
