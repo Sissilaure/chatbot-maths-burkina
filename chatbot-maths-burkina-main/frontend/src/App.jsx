@@ -1040,7 +1040,7 @@ export default function App() {
       </div>
 
       <footer className="px-4 pb-4 text-center text-xs text-base-content/40">
-        Prof Amira · Programme officiel du Burkina Faso (6ème à Terminale)
+        Prof Amira, ton prof infatigable · Programme officiel du Burkina Faso (6ème à Terminale)
         <br />
         Un produit Hakili Lab
       </footer>
