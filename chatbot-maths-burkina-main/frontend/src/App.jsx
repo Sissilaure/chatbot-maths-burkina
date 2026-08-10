@@ -32,6 +32,7 @@ import ChatInput from "./components/ChatInput.jsx"
 import TypingIndicator from "./components/TypingIndicator.jsx"
 import WelcomeCard from "./components/WelcomeCard.jsx"
 import VideoGuide from "./components/VideoGuide.jsx"
+import HowItWorksSheet from "./components/HowItWorksSheet.jsx"
 import BackgroundBlobs from "./components/BackgroundBlobs.jsx"
 import AuthGate from "./components/AuthGate.jsx"
 import ConsentGate from "./components/ConsentGate.jsx"
@@ -45,6 +46,7 @@ import { compressImageFile } from "./lib/image.js"
 import { getProfile, recordTopicVisit, recordStruggle, dismissStruggle, clearProfile } from "./lib/profile.js"
 import { getToken, logout as authLogout, restoreSession, AUTH_CHOICE_KEY } from "./lib/auth.js"
 import { buildHistoryUpTo } from "./lib/history.js"
+import { useIsMobile } from "./lib/useMediaQuery.js"
 
 const STORAGE_KEY = "chatmaths-session-v1"
 const EXERCISE_BATCH_SIZE = 5
@@ -80,6 +82,11 @@ function deriveLastExchange(msgs) {
 }
 
 export default function App() {
+  // Correctifs d'affichage mobile (voir RAPPORT_MOBILE.md) : plusieurs blocs (VideoGuide, les 3
+  // cartes explicatives) ne sont montés en ligne que sur bureau ; sur mobile ils rejoignent la
+  // feuille modale "Comment ça marche ?" pour que le champ de saisie reste visible sans défiler.
+  const isMobile = useIsMobile()
+  const [howItWorksOpen, setHowItWorksOpen] = useState(false)
   const [theme, setTheme] = useState(() => localStorage.getItem("chatmaths-theme") || "chatmaths-light")
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     const stored = localStorage.getItem("chatmaths-sidebar-open")
@@ -965,9 +972,19 @@ export default function App() {
           </div>
 
           <div ref={chatRef} className="scrollbar-thin flex-1 overflow-y-auto p-4 sm:p-6">
-            <VideoGuide />
+            {/* Sur mobile, VideoGuide ne s'affiche plus en ligne d'emblée (voir RAPPORT_MOBILE.md
+                §1) : elle rejoint la feuille "Comment ça marche ?" (HowItWorksSheet, plus bas),
+                ouverte depuis WelcomeCard. Sur bureau, comportement inchangé. */}
+            {!isMobile && <VideoGuide />}
             <div ref={sessionContentRef} className="space-y-4">
-              {messages.length === 0 && <WelcomeCard personalizedMessage={user ? greetingMessage : null} />}
+              {messages.length === 0 && (
+                <WelcomeCard
+                  personalizedMessage={user ? greetingMessage : null}
+                  chapitre={chapitre}
+                  onSuggestionClick={handleSuggestionClick}
+                  onOpenHowItWorks={() => setHowItWorksOpen(true)}
+                />
+              )}
 
               <AnimatePresence initial={false}>
                 {messages.map((msg, i) =>
@@ -1027,6 +1044,8 @@ export default function App() {
         <br />
         Un produit Hakili Lab
       </footer>
+
+      <HowItWorksSheet open={howItWorksOpen} onClose={() => setHowItWorksOpen(false)} />
 
       <AnimatePresence>
         {toast && (
