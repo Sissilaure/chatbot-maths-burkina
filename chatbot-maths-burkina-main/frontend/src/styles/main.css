@@ -73,6 +73,19 @@ body {
 .prose-chat .katex {
   font-size: 1.1em;
 }
+/* Formules et tableaux larges (formules longues, tableaux de signes/variations) : défilement
+   horizontal interne au lieu de déborder la bulle, avec un léger dégradé sur le bord droit
+   signalant qu'il y a une suite. Toujours présent (pas de détection JS de l'overflow réel) mais
+   assez discret pour ne pas gêner le contenu qui tient déjà dans la largeur (voir
+   RAPPORT_MOBILE.md §8). La taille de police n'est pas touchée. */
+.prose-chat .katex-display,
+.prose-chat table {
+  box-shadow: inset -14px 0 10px -10px rgba(0, 0, 0, 0.16);
+}
+[data-theme="chatmaths-dark"] .prose-chat .katex-display,
+[data-theme="chatmaths-dark"] .prose-chat table {
+  box-shadow: inset -14px 0 10px -10px rgba(0, 0, 0, 0.45);
+}
 .prose-chat .katex-display {
   overflow-x: auto;
   overflow-y: hidden;

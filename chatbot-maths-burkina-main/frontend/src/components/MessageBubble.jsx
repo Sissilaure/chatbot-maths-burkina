@@ -47,7 +47,11 @@ export default function MessageBubble({ message, onRegenerate, regenerating, onS
         {isUser ? <GraduationCap size={18} /> : <Bot size={18} />}
       </div>
 
-      <div className={`flex max-w-[85%] flex-col gap-1.5 ${isUser ? "items-end" : "items-start"}`}>
+      {/* min-w-0 : sans ça, un enfant flex ne rétrécit jamais sous la largeur intrinsèque de son
+          contenu (formule KaTeX ou tableau large) — le overflow-x:auto de .prose-chat ne sert
+          alors à rien, la bulle entière pousse la page au lieu de défiler en interne (voir
+          RAPPORT_MOBILE.md §8). */}
+      <div className={`flex min-w-0 max-w-[85%] flex-col gap-1.5 ${isUser ? "items-end" : "items-start"}`}>
         <Card
           className={`px-4 py-3 ${
             isUser
