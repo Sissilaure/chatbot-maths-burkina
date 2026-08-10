@@ -162,9 +162,16 @@ export default function Sidebar({
   onSelectConversation,
   onDeleteConversation,
   onNewConversation,
+  mobileTab: controlledMobileTab,
+  onMobileTabChange,
 }) {
   const isMobile = useIsMobile()
-  const [mobileTab, setMobileTab] = useState("reglages")
+  // Contrôlé par App.jsx quand fourni (voir ChatInput.jsx : les pastilles classe/chapitre
+  // forcent l'onglet "Réglages" même si la sidebar est déjà ouverte sur "Historique") ; sinon
+  // état local, pour rester utilisable isolément (tests, Storybook...).
+  const [localMobileTab, setLocalMobileTab] = useState("reglages")
+  const mobileTab = controlledMobileTab ?? localMobileTab
+  const setMobileTab = onMobileTabChange ?? setLocalMobileTab
 
   if (isMobile) {
     return (

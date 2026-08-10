@@ -11,10 +11,16 @@ const KIND_META = {
   error: { label: "Erreur", icon: AlertTriangle, colorClass: "text-error" },
 }
 
-export default function MessageBubble({ message, onRegenerate, regenerating }) {
+// "Simplifie" n'a de sens que sur une réponse de chat "normale" — pas sur un résumé, une version
+// déjà simplifiée, ou un message d'erreur (même critère que l'ancien canSimplify de ChatInput,
+// désormais évalué par message plutôt que globalement — voir App.jsx::handleSimplify).
+const SIMPLIFIABLE_KINDS = [undefined, "chat"]
+
+export default function MessageBubble({ message, onRegenerate, regenerating, onSimplify, simplifying }) {
   const isUser = message.type === "user"
   const [copied, setCopied] = useState(false)
   const kindMeta = KIND_META[message.kind]
+  const canSimplify = Boolean(onSimplify) && SIMPLIFIABLE_KINDS.includes(message.kind)
 
   async function handleCopy() {
     try {
@@ -105,6 +111,17 @@ export default function MessageBubble({ message, onRegenerate, regenerating }) {
             {onRegenerate && (
               <Button variant="ghost" size="icon" title="Régénérer la réponse" onClick={onRegenerate} disabled={regenerating}>
                 <RefreshCcw size={14} className={regenerating ? "animate-spin" : ""} />
+              </Button>
+            )}
+            {canSimplify && (
+              <Button
+                variant="ghost"
+                size="icon"
+                title="Simplifie cette réponse"
+                onClick={onSimplify}
+                disabled={simplifying}
+              >
+                <Baby size={14} className={simplifying ? "animate-pulse" : ""} />
               </Button>
             )}
           </div>

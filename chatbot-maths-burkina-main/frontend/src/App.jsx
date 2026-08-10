@@ -125,6 +125,11 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [streaming, setStreaming] = useState(false)
   const [regeneratingIndex, setRegeneratingIndex] = useState(null)
+  const [simplifyingIndex, setSimplifyingIndex] = useState(null)
+  // Onglet mobile de la sidebar (Réglages/Historique), remonté ici pour que les pastilles
+  // classe/chapitre de ChatInput puissent forcer "Réglages" même si la sidebar affichait déjà
+  // "Historique" — voir Sidebar.jsx (mobileTab contrôlé) et handleOpenSettings plus bas.
+  const [sidebarMobileTab, setSidebarMobileTab] = useState("reglages")
   const [serverOnline, setServerOnline] = useState(true)
   const [exportingSession, setExportingSession] = useState(false)
   const [exerciseProgress, setExerciseProgress] = useState(null)
@@ -620,23 +625,39 @@ export default function App() {
     setRegeneratingIndex(null)
   }
 
-  async function handleSimplify() {
-    if (!lastAnswer || loading || streaming) return
-    setLoading(true)
+  /** Simplifie le message bot à l'index donné — pas forcément le dernier de la conversation :
+   * "Simplifie" vit maintenant sous chaque réponse (voir MessageBubble.jsx), plus seulement dans
+   * la barre d'outils agissant implicitement sur lastAnswer. La question associée est déduite du
+   * message utilisateur qui précède directement ce message-là. */
+  async function handleSimplify(index) {
+    if (loading || streaming || simplifyingIndex !== null) return
+    const target = messages[index]
+    if (!target || target.type !== "bot" || !target.text) return
+    const precedingUser = messages[index - 1]
+    const questionForThisMessage = precedingUser?.type === "user" ? precedingUser.text : lastQuestion
+
+    setSimplifyingIndex(index)
     try {
       const convId = await ensureConversation().catch(() => null)
-      const simplified = await simplifyResponse(lastQuestion, lastAnswer, classCode, chapitre, convId)
+      const simplified = await simplifyResponse(questionForThisMessage, target.text, classCode, chapitre, convId)
       pushBotMessage(simplified, [], "simplify")
       setLastAnswer(simplified)
-      recordStruggle(classCode, chapitre, lastQuestion, classeNom)
-      if (user) postStruggle(getToken(), classCode, chapitre, lastQuestion).catch(() => {})
+      recordStruggle(classCode, chapitre, questionForThisMessage, classeNom)
+      if (user) postStruggle(getToken(), classCode, chapitre, questionForThisMessage).catch(() => {})
       refreshProfile()
     } catch (err) {
       if (!interceptGateError(err)) {
         pushBotError("Impossible de simplifier la réponse pour le moment.")
       }
     }
-    setLoading(false)
+    setSimplifyingIndex(null)
+  }
+
+  /** Ouvre la sidebar sur l'onglet "Réglages" (mobile) — utilisé par les pastilles classe/chapitre
+   * de ChatInput, voir RAPPORT_MOBILE.md §5. */
+  function handleOpenSettings() {
+    setSidebarMobileTab("reglages")
+    setSidebarOpen(true)
   }
 
   async function handleExercise() {
@@ -942,6 +963,8 @@ export default function App() {
                 onSelectConversation={handleSelectConversation}
                 onDeleteConversation={handleDeleteConversation}
                 onNewConversation={handleNewConversation}
+                mobileTab={sidebarMobileTab}
+                onMobileTabChange={setSidebarMobileTab}
               />
             </motion.div>
           )}
@@ -1001,6 +1024,8 @@ export default function App() {
                       message={msg}
                       onRegenerate={msg.type === "bot" && i > 0 && messages[i - 1]?.type === "user" ? () => handleRegenerate(i) : null}
                       regenerating={regeneratingIndex === i}
+                      onSimplify={msg.type === "bot" ? () => handleSimplify(i) : null}
+                      simplifying={simplifyingIndex === i}
                     />
                   )
                 )}
@@ -1018,7 +1043,6 @@ export default function App() {
             question={question}
             setQuestion={setQuestion}
             onSend={handleSend}
-            onSimplify={handleSimplify}
             onExercise={handleExercise}
             onCourse={handleCourse}
             onRemediation={handleRemediation}
@@ -1027,13 +1051,15 @@ export default function App() {
             onPhotoSelected={handlePhotoExercise}
             activePhoto={Boolean(activePhoto)}
             onClearActivePhoto={() => setActivePhoto(null)}
-            canSimplify={Boolean(lastAnswer)}
             canExercise={canGenerateExercise}
             canChapterFeatures={canUseChapterFeatures}
             loading={loading || streaming}
             exerciseProgress={exerciseProgress}
             exportingSession={exportingSession}
             photoLoading={photoLoading}
+            classeNom={classeNom}
+            chapitre={chapitre}
+            onOpenSettings={handleOpenSettings}
           />
         </main>
       </div>
