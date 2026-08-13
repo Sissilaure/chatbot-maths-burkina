@@ -16,7 +16,7 @@ import re
 import secrets
 import unicodedata
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Iterable, Optional
 
 import psycopg
@@ -151,11 +151,10 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.users (
 
     class_code        text,
     gender            text CHECK (gender IN ('F', 'M')),
-    birth_year        smallint CHECK (birth_year BETWEEN 1950 AND 2020),
+    birth_date        date CHECK (birth_date IS NULL OR birth_date <= CURRENT_DATE),
     is_candidat_libre boolean,
     school_id         uuid REFERENCES {SCHEMA}.schools(id) ON DELETE SET NULL,
     school_raw        text,
-    region            text,
 
     consent_version   text,
     consent_at        timestamptz,
@@ -303,10 +302,9 @@ def create_user(
     *,
     class_code: Optional[str] = None,
     gender: Optional[str] = None,
-    birth_year: Optional[int] = None,
+    birth_date: Optional[date] = None,
     is_candidat_libre: bool = False,
     school_name: Optional[str] = None,
-    region: Optional[str] = None,
     consent_version: Optional[str] = None,
 ) -> Optional[dict]:
     """
@@ -315,7 +313,7 @@ def create_user(
     """
     school_id = None
     if not is_candidat_libre:
-        school_id = resolve_school(school_name, region=region)
+        school_id = resolve_school(school_name)
 
     key = normalize_key(username)
     consent_at = _now() if consent_version else None
@@ -327,13 +325,13 @@ def create_user(
                 cur.execute(
                     f"""INSERT INTO {SCHEMA}.users
                         (public_code, username, username_key, password_hash, role,
-                         class_code, gender, birth_year, is_candidat_libre,
-                         school_id, school_raw, region, consent_version, consent_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         class_code, gender, birth_date, is_candidat_libre,
+                         school_id, school_raw, consent_version, consent_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING *""",
                     (code, username.strip(), key, password_hash, role,
-                     class_code, gender, birth_year, is_candidat_libre,
-                     school_id, (school_name or None), region,
+                     class_code, gender, birth_date, is_candidat_libre,
+                     school_id, (school_name or None),
                      consent_version, consent_at),
                 )
                 return _user_row(cur.fetchone())
@@ -383,8 +381,8 @@ def update_profile_fields(user_id: str, **fields) -> Optional[dict]:
     Complétion différée de la fiche (rappel non bloquant dans ProfilePanel).
     Seuls les champs de la liste blanche sont modifiables.
     """
-    allowed = {"class_code", "gender", "birth_year",
-               "is_candidat_libre", "region", "school_raw"}
+    allowed = {"class_code", "gender", "birth_date",
+               "is_candidat_libre", "school_raw"}
     updates = {k: v for k, v in fields.items() if k in allowed}
 
     if "school_name" in fields:
@@ -812,15 +810,15 @@ def get_activity_trend(class_code: Optional[str] = None) -> list[dict]:
 
 def get_demographics(class_code: Optional[str] = None) -> dict:
     """
-    Répartition genre / candidat libre / cohorte d'âge.
+    Répartition genre / candidat libre / tranche d'âge (par pas de 3 ans, calculée depuis
+    birth_date — plus de birth_year, voir migrations/004_birth_date_drop_region.sql).
     Chaque cellule sous MIN_COHORT est regroupée dans "autres" plutôt
     qu'affichée telle quelle.
     """
     out: dict[str, list[dict]] = {}
     with get_connection() as conn, conn.cursor() as cur:
         for label, column in (("gender", "gender"),
-                              ("candidat_libre", "is_candidat_libre"),
-                              ("birth_year", "birth_year")):
+                              ("candidat_libre", "is_candidat_libre")):
             cur.execute(
                 f"""SELECT {column}::text AS value, count(*) AS n
                     FROM {SCHEMA}.users
@@ -834,4 +832,27 @@ def get_demographics(class_code: Optional[str] = None) -> dict:
             if hidden:
                 visible.append({"value": "autres", "n": hidden})
             out[label] = visible
+
+        # Tranches de 3 ans (ex: "12-14 ans") plutôt que l'année de naissance brute affichée telle
+        # quelle avant ce correctif : birth_date permet de calculer un âge réel (age()), contrairement
+        # à birth_year qui ne donnait qu'une année sans jour/mois de référence.
+        cur.execute(
+            f"""SELECT bracket_start, count(*) AS n FROM (
+                    SELECT (date_part('year', age(birth_date))::int / 3) * 3 AS bracket_start
+                    FROM {SCHEMA}.users
+                    WHERE role = 'eleve' AND birth_date IS NOT NULL
+                      AND (%s::text IS NULL OR class_code = %s)
+                ) t
+                GROUP BY bracket_start""",
+            (class_code, class_code),
+        )
+        age_rows = [dict(r) for r in cur.fetchall()]
+        age_visible = [
+            {"value": f"{r['bracket_start']}-{r['bracket_start'] + 2} ans", "n": r["n"]}
+            for r in age_rows if r["n"] >= MIN_COHORT
+        ]
+        age_hidden = sum(r["n"] for r in age_rows if r["n"] < MIN_COHORT)
+        if age_hidden:
+            age_visible.append({"value": "autres", "n": age_hidden})
+        out["age_bracket"] = age_visible
     return out

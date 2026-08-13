@@ -138,7 +138,7 @@ def require_consent(user=Depends(get_current_user)):
 # jamais valoir NULL, y compris pour un compte migré (voir RAPPORT_MIGRATION.md — la sous-condition
 # ci-dessous est incluse pour rester fidèle à la spécification mais ne peut pas se déclencher
 # en pratique tant que database.py garde ce défaut).
-_PROFILE_REQUIRED_FIELDS = ("class_code", "gender", "birth_year", "is_candidat_libre")
+_PROFILE_REQUIRED_FIELDS = ("class_code", "gender", "birth_date", "is_candidat_libre")
 
 
 def is_profile_complete(user: dict) -> bool:

@@ -8,6 +8,8 @@ route acceptant GET mais pas HEAD, un endpoint mutateur sans authentification).
 Importer `main` instancie le RAGSystem complet (modèle d'embeddings + ChromaDB) : le premier test
 de ce fichier est donc lent (10-20s), les suivants réutilisent la même instance via le TestClient.
 """
+from datetime import date
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -117,7 +119,7 @@ def test_admin_routes_require_decideur_auth():
 
 
 def _register(unique_username, **overrides):
-    """Fiche d'inscription complète par défaut (class_code/gender/birth_year/is_candidat_libre/
+    """Fiche d'inscription complète par défaut (class_code/gender/birth_date/is_candidat_libre/
     school_name sont obligatoires depuis le correctif de spécification — voir RAPPORT_MIGRATION.md).
     `overrides` permet à un test de ne faire varier qu'un seul champ à la fois."""
     payload = {
@@ -125,10 +127,9 @@ def _register(unique_username, **overrides):
         "password": "motdepasse123",
         "class_code": "3ème",
         "gender": "F",
-        "birth_year": 2012,
+        "birth_date": "2012-06-15",
         "is_candidat_libre": False,
         "school_name": "École Test",
-        "region": "Centre",
         "consent_accepted": True,
     }
     payload.update(overrides)
@@ -182,8 +183,33 @@ def test_register_rejects_invalid_class_or_gender(unique_username):
     assert bad_gender.status_code == 400
 
 
+def test_register_rejects_implausible_birth_date(unique_username):
+    """birth_year (année seule, borné 1950-2020) est remplacé par birth_date (date complète,
+    validée en âge — voir main.py::_is_plausible_birth_date, MIN_AGE_YEARS/MAX_AGE_YEARS) : un
+    élève de moins de 6 ans ou de plus de 80 ans, ou une date dans le futur, doit être rejeté."""
+    too_young = date.today().replace(year=date.today().year - 2)
+    res = _register(unique_username, birth_date=too_young.isoformat())
+    assert res.status_code == 400
+
+    too_old = date.today().replace(year=date.today().year - 90)
+    res = _register(unique_username, birth_date=too_old.isoformat())
+    assert res.status_code == 400
+
+    in_the_future = date.today().replace(year=date.today().year + 1)
+    res = _register(unique_username, birth_date=in_the_future.isoformat())
+    assert res.status_code == 400
+
+
+def test_register_ignores_unknown_region_field(unique_username):
+    """region a été supprimée de la fiche (app.users.region, RegisterRequest.region — voir
+    migrations/004_birth_date_drop_region.sql) : l'envoyer encore ne doit plus rien casser, Pydantic
+    ignore silencieusement les champs inconnus par défaut."""
+    res = _register(unique_username, region="Centre")
+    assert res.status_code == 200
+
+
 def test_register_requires_profile_fields(unique_username):
-    """class_code/gender/birth_year/is_candidat_libre sont désormais obligatoires : les omettre
+    """class_code/gender/birth_date/is_candidat_libre sont désormais obligatoires : les omettre
     doit 422 (erreur de validation Pydantic, interceptée par le handler français, voir main.py),
     pas 400 (qui suppose que le champ est présent mais que sa VALEUR est invalide)."""
     payload = {
@@ -220,7 +246,7 @@ def test_business_route_blocked_when_consent_missing(unique_username):
     username = unique_username("noconsent428")
     user = database.create_user(
         username, auth.hash_password("motdepasse123"),
-        class_code="3ème", gender="F", birth_year=2012, is_candidat_libre=False,
+        class_code="3ème", gender="F", birth_date=date(2012, 6, 15), is_candidat_libre=False,
         school_name="École Test",
         # consent_version omis : reste NULL, comme un compte migré.
     )
@@ -245,7 +271,7 @@ def test_business_route_blocked_when_profile_incomplete(unique_username):
     user = database.create_user(
         username, auth.hash_password("motdepasse123"),
         consent_version=CONSENT_VERSION,
-        # class_code/gender/birth_year omis : NULL, comme un compte migré pas encore complété.
+        # class_code/gender/birth_date omis : NULL, comme un compte migré pas encore complété.
     )
     token = auth.create_token(user["id"], user["username"])
 
@@ -263,6 +289,40 @@ def test_business_route_blocked_when_profile_incomplete(unique_username):
     assert guest_res.status_code != 428
 
 
+def test_class_level_is_forced_from_account_for_authenticated_student(unique_username, monkeypatch):
+    """La classe est désormais fixée au compte (app.users.class_code, voir RAPPORT_MIGRATION.md) :
+    un élève connecté ne doit jamais pouvoir la contourner en envoyant une autre valeur dans la
+    requête. Un élève inscrit en Tle qui envoie class_level="6ème" doit tout de même obtenir une
+    réponse ancrée sur la Terminale — vérifié ici en interceptant l'appel à generate_response pour
+    inspecter la classe réellement transmise, sans dépendre d'un vrai appel à Claude."""
+    register_res = _register(unique_username, class_code="Tle")
+    token = register_res.json()["token"]
+
+    captured = {}
+
+    def fake_generate_response(question, class_level, chapter, history=None):
+        captured["class_level"] = class_level
+        return {"answer": "ok", "sources": [], "from_rag": False}
+
+    monkeypatch.setattr(main.rag_system, "generate_response", fake_generate_response)
+
+    res = client.post(
+        "/api/chat",
+        json={"question": "test", "class_level": "6ème", "chapter": "", "history": []},
+        headers=_auth_headers(token),
+    )
+    assert res.status_code == 200
+    assert captured["class_level"] == "Tle"
+
+    # Un invité, lui, garde le comportement précédent : la classe qu'il envoie est utilisée telle quelle.
+    guest_res = client.post(
+        "/api/chat",
+        json={"question": "test", "class_level": "6ème", "chapter": "", "history": []},
+    )
+    assert guest_res.status_code == 200
+    assert captured["class_level"] == "6ème"
+
+
 def test_summary_and_simplify_are_gated_too(unique_username):
     """La porte 428 couvre aussi /api/summary et /api/simplify (elles écrivent en base pour un
     compte connecté, voir _persist_message_best_effort) — pas seulement chat/exercice/remédiation."""
@@ -272,7 +332,7 @@ def test_summary_and_simplify_are_gated_too(unique_username):
     username = unique_username("noconsentgate")
     user = database.create_user(
         username, auth.hash_password("motdepasse123"),
-        class_code="3ème", gender="F", birth_year=2012, is_candidat_libre=False,
+        class_code="3ème", gender="F", birth_date=date(2012, 6, 15), is_candidat_libre=False,
         school_name="École Test",
     )
     token = auth.create_token(user["id"], user["username"])
@@ -301,7 +361,7 @@ def test_profile_and_consent_routes_are_never_gated(unique_username):
 
     username = unique_username("selfunblock")
     user = database.create_user(username, auth.hash_password("motdepasse123"))
-    # consent_version NULL et class_code/gender/birth_year NULL : un compte migré non résolu,
+    # consent_version NULL et class_code/gender/birth_date NULL : un compte migré non résolu,
     # dans l'état le plus bloqué possible.
     token = auth.create_token(user["id"], user["username"])
     headers = _auth_headers(token)
@@ -311,7 +371,7 @@ def test_profile_and_consent_routes_are_never_gated(unique_username):
 
     profile_res = client.patch(
         "/api/profile",
-        json={"class_code": "3ème", "gender": "F", "birth_year": 2012, "is_candidat_libre": True},
+        json={"class_code": "3ème", "gender": "F", "birth_date": "2012-06-15", "is_candidat_libre": True},
         headers=headers,
     )
     assert profile_res.status_code == 200
@@ -325,8 +385,12 @@ def test_profile_and_consent_routes_are_never_gated(unique_username):
 def test_persistence_failure_is_counted_and_exposed_in_health(unique_username, monkeypatch):
     """La persistance best-effort ne doit jamais faire échouer la réponse à l'élève, mais un
     échec ne doit plus non plus rester complètement muet (voir _persist_exchange_best_effort) :
-    il doit être compté et visible dans GET /api/health::persistence_failures."""
-    register_res = _register(unique_username)
+    il doit être compté et visible dans GET /api/health::persistence_failures.
+    class_code="6ème" explicite : depuis le correctif "classe fixée au compte"
+    (_resolve_class_level), le serveur ignore le class_level envoyé par le client pour un compte
+    connecté et utilise celui du compte — le chapitre utilisé plus bas ("Les fractions") doit donc
+    être valide pour la classe du compte, pas juste pour la valeur envoyée dans la requête."""
+    register_res = _register(unique_username, class_code="6ème")
     token = register_res.json()["token"]
     conv_id = client.post(
         "/api/conversations", json={"class_level": "6ème", "chapter": "Les fractions"},

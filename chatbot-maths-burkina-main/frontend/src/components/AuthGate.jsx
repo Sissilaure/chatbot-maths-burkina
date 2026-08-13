@@ -185,10 +185,9 @@ export default function AuthGate({ onAuthenticated, onContinueAsGuest }) {
       const session = await register(username.trim(), password, {
         classCode: profileValues.classCode,
         gender: profileValues.gender,
-        birthYear: Number(profileValues.birthYear),
+        birthDate: profileValues.birthDate,
         isCandidatLibre: profileValues.isCandidatLibre,
         schoolName: profileValues.schoolName,
-        region: profileValues.region,
       })
       onAuthenticated(session)
     } catch (err) {

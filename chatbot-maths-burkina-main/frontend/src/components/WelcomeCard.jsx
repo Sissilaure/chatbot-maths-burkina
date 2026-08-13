@@ -1,16 +1,10 @@
 import React from "react"
 import { motion } from "framer-motion"
-import { Sparkles, HelpCircle, ChevronRight } from "lucide-react"
+import { Sparkles, HelpCircle } from "lucide-react"
 import Card from "./ui/Card"
 import MathContent from "./MathContent"
-import { ONBOARDING_STEPS } from "../lib/onboardingSteps"
 import { buildSuggestions } from "../lib/suggestions"
 import { useIsMobile } from "../lib/useMediaQuery"
-
-const stepVariants = {
-  hidden: { opacity: 0, y: 12 },
-  show: (i) => ({ opacity: 1, y: 0, transition: { duration: 0.3, delay: 0.15 + i * 0.08, ease: "easeOut" } }),
-}
 
 // Sur mobile, au plus 2 suggestions (densité réduite, voir RAPPORT_MOBILE.md §4) ; sur bureau,
 // toutes celles que buildSuggestions renvoie (4 aujourd'hui).
@@ -36,7 +30,7 @@ function SuggestionButtons({ suggestions, onSuggestionClick }) {
   )
 }
 
-export default function WelcomeCard({ personalizedMessage, chapitre, onSuggestionClick, onOpenHowItWorks }) {
+export default function WelcomeCard({ personalizedMessage, chapitre, onSuggestionClick, onOpenAbout }) {
   const isMobile = useIsMobile()
   const allSuggestions = buildSuggestions(chapitre)
   const suggestions = isMobile ? allSuggestions.slice(0, MOBILE_SUGGESTION_LIMIT) : allSuggestions
@@ -55,10 +49,10 @@ export default function WelcomeCard({ personalizedMessage, chapitre, onSuggestio
             </div>
           ) : (
             <>
-              <p className="font-heading mb-1 flex items-center gap-1.5 text-xl font-extrabold">
+              {/* <p className="font-heading mb-1 flex items-center gap-1.5 text-xl font-extrabold">
                 <Sparkles size={20} className="text-accent motion-safe:animate-pulse-slow" />
                 Salut, prêt à progresser en maths ?
-              </p>
+              </p> */}
               <p className="mb-4 text-base text-base-content/70">
                 Pose n'importe quelle question de maths, du niveau 6ème à la Terminale. Je m'adapte à toi.
               </p>
@@ -67,40 +61,18 @@ export default function WelcomeCard({ personalizedMessage, chapitre, onSuggestio
 
           <SuggestionButtons suggestions={suggestions} onSuggestionClick={onSuggestionClick} />
 
-          {isMobile ? (
-            <button
-              type="button"
-              onClick={onOpenHowItWorks}
-              className="flex w-full items-center justify-between rounded-lg border border-base-300/50 bg-base-100/70 px-3.5 py-3 text-sm font-medium text-base-content/70 transition-colors hover:border-primary/40 hover:text-primary"
-            >
-              <span className="flex items-center gap-2">
-                <HelpCircle size={16} />
-                Comment ça marche ?
-              </span>
-              <ChevronRight size={16} />
-            </button>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-3">
-              {ONBOARDING_STEPS.map((step, i) => (
-                <motion.div
-                  key={i}
-                  custom={i}
-                  initial="hidden"
-                  animate="show"
-                  variants={stepVariants}
-                  whileHover={{ y: -4 }}
-                  transition={{ duration: 0.2, ease: "easeOut" }}
-                  className="card-interactive rounded-xl border border-base-300/50 bg-base-100/70 p-3.5"
-                >
-                  <div className={`mb-2 inline-flex h-8 w-8 items-center justify-center rounded-lg ${step.color}`}>
-                    <step.icon size={16} />
-                  </div>
-                  <p className="font-heading text-base font-semibold">{step.title}</p>
-                  <p className="mt-0.5 text-sm leading-relaxed text-base-content/60">{step.text}</p>
-                </motion.div>
-              ))}
-            </div>
-          )}
+          {/* Vidéo de démo, 3 cartes explicatives, présentation du projet et rappel du
+              consentement ont rejoint AboutPanel (voir App.jsx) : un seul lien discret,
+              identique sur les deux tailles d'écran, plutôt qu'un contenu affiché en permanence
+              à chaque ouverture (voir RAPPORT_MOBILE.md/RAPPORT_MIGRATION.md). */}
+          <button
+            type="button"
+            onClick={onOpenAbout}
+            className="flex items-center gap-1.5 text-sm font-medium text-base-content/50 transition-colors hover:text-primary"
+          >
+            <HelpCircle size={14} />
+            Comment ça marche ?
+          </button>
         </div>
       </Card>
     </motion.div>

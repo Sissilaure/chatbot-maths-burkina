@@ -7,6 +7,7 @@ import Button from "./ui/Button"
 import ExportMenu from "./ExportMenu"
 import BottomSheet from "./ui/BottomSheet"
 import { useIsMobile } from "../lib/useMediaQuery"
+import { cn } from "../lib/utils"
 
 // Hauteur automatique du textarea : une ligne au repos, jusqu'à 4 lignes maximum, pas de barre
 // de défilement visible avant cette limite (voir RAPPORT_MOBILE.md §6).
@@ -53,14 +54,23 @@ function SheetAction({ icon: Icon, label, hint, onClick, disabled }) {
 }
 
 /** Pastille compacte classe/chapitre au-dessus du champ de saisie (mobile) : ouvre l'onglet
- * Réglages de la sidebar au clic, voir RAPPORT_MOBILE.md §5. */
-function InfoPill({ text, onClick }) {
+ * Réglages de la sidebar au clic, voir RAPPORT_MOBILE.md §5. `interactive=false` (pastille
+ * classe d'un compte connecté, dont la classe est fixée au compte, voir RAPPORT_MIGRATION.md) la
+ * rend purement informative — plus rien à régler dessus, seul « Changer » depuis le profil le peut. */
+const PILL_CLASSNAME =
+  "flex min-h-[32px] items-center gap-1 rounded-full border border-base-300/70 bg-base-100 px-2.5 py-1 text-xs font-medium text-base-content/70"
+
+function InfoPill({ text, onClick, interactive = true }) {
+  if (!interactive) {
+    return (
+      <span className={PILL_CLASSNAME}>
+        <GraduationCap size={11} />
+        <span className="max-w-[38vw] truncate">{text}</span>
+      </span>
+    )
+  }
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex min-h-[32px] items-center gap-1 rounded-full border border-base-300/70 bg-base-100 px-2.5 py-1 text-xs font-medium text-base-content/70"
-    >
+    <button type="button" onClick={onClick} className={PILL_CLASSNAME}>
       <GraduationCap size={11} />
       <span className="max-w-[38vw] truncate">{text}</span>
     </button>
@@ -68,6 +78,7 @@ function InfoPill({ text, onClick }) {
 }
 
 export default function ChatInput({
+  user,
   question,
   setQuestion,
   onSend,
@@ -112,7 +123,15 @@ export default function ChatInput({
   }
 
   return (
-    <div className="border-t border-base-300/60 bg-base-100/80 p-3 backdrop-blur-md sm:p-4">
+    <div
+      className={cn(
+        "border-t border-base-300/60 bg-base-100/80 backdrop-blur-md",
+        // Padding horizontal resserré sur mobile (voir RAPPORT_MOBILE.md §2) : avec 3 cibles
+        // tactiles de 44px (⋯, caméra, envoi) à côté du champ, le padding par défaut (p-3)
+        // laissait le champ de saisie sous les 60% de largeur visés à 360px.
+        isMobile ? "px-0.5 py-3" : "p-4"
+      )}
+    >
       {activePhoto && (
         <div className="mb-2 flex items-center gap-2 rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary">
           <Camera size={13} />
@@ -132,12 +151,12 @@ export default function ChatInput({
           n'est pas visible en permanence — voir RAPPORT_MOBILE.md §5. */}
       {isMobile && (classeNom || chapitre) && (
         <div className="mb-2 flex items-center gap-1.5">
-          <InfoPill text={classeNom || "Classe"} onClick={onOpenSettings} />
+          <InfoPill text={classeNom || "Classe"} onClick={onOpenSettings} interactive={!user} />
           {chapitre && <InfoPill text={chapitre} onClick={onOpenSettings} />}
         </div>
       )}
 
-      <div className="flex items-end gap-2">
+      <div className={cn("flex items-end", isMobile ? "gap-px" : "gap-2")}>
         {isMobile && (
           <Button
             variant="ghost"
@@ -169,7 +188,7 @@ export default function ChatInput({
             title="Prends en photo un exercice (ou choisis une photo/un fichier existant). Astuce : tape une consigne dans le champ ci-dessus avant de cliquer pour l'envoyer avec la photo."
             className="min-h-[44px] min-w-[44px] shrink-0"
           >
-            <Camera size={18} className={photoLoading ? "animate-pulse" : ""} />
+            <Camera size={20} className={photoLoading ? "animate-pulse" : ""} />
           </Button>
         )}
 
@@ -185,7 +204,10 @@ export default function ChatInput({
         />
         <Button
           variant="primary"
-          size="lg"
+          // size="lg" (bureau) ajoute px-5 (20px de chaque côté) qui, cumulé avec min-w-[44px] ci-
+          // dessous, poussait ce bouton bien au-delà de 44px sur mobile (voir RAPPORT_MOBILE.md
+          // §2) : size="icon" y donne exactement 44×44 (padding p-2 + le min-w/min-h explicite).
+          size={isMobile ? "icon" : "lg"}
           onClick={() => onSend()}
           disabled={!question.trim() || loading}
           title="Envoyer"

@@ -12,9 +12,32 @@
  * — voir docxModel.test.js) ; ce fichier se contente de traduire ce modèle en primitives Word.
  */
 import { parseMarkdownLines, qcmToLines, splitBoldSegments } from "./docxModel.js"
+import { formatMessageTime } from "./dateFormat.js"
 
 function segmentsToRuns(TextRun, segments, extraProps = {}) {
   return segments.map(({ text, bold }) => new TextRun({ text, bold, ...extraProps }))
+}
+
+/** Date absolue ("12 août 2026"), pas relative ("Aujourd'hui"/"Hier" — voir dateFormat.js) : un
+ * document Word exporté aujourd'hui doit rester lisible tel quel des mois plus tard, contrairement
+ * à l'affichage à l'écran qui se met à jour à chaque ouverture. */
+function formatExportDate(iso) {
+  if (!iso) return ""
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ""
+  return date.toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" })
+}
+
+/** En-tête "Élève"/"Prof Amira" d'un message, suivi de son heure si connue ("Élève · 14:32") —
+ * partagé entre exportMessagesToDocx (session courante) et historyMessageToParagraphs (historique
+ * serveur), dont les champs d'horodatage diffèrent (createdAt côté client, created_at côté serveur —
+ * voir l'appelant de chaque fonction). */
+function speakerLabelParagraph(docxLib, label, color, iso, spacing) {
+  const { Paragraph, TextRun } = docxLib
+  const runs = [new TextRun({ text: label, bold: true, color })]
+  const time = formatMessageTime(iso)
+  if (time) runs.push(new TextRun({ text: `  ·  ${time}`, color: "94A3B8", size: 18 }))
+  return new Paragraph({ children: runs, spacing })
 }
 
 function linesToParagraphs(docxLib, lines) {
@@ -69,14 +92,10 @@ export async function exportMessagesToDocx(messages, { filename = "chatmaths.doc
 
   for (const msg of messages) {
     if (msg.type === "user") {
-      children.push(
-        new Paragraph({ children: [new TextRun({ text: "Élève", bold: true, color: "0D9488" })], spacing: { before: 240, after: 60 } })
-      )
+      children.push(speakerLabelParagraph(docxLib, "Élève", "0D9488", msg.createdAt, { before: 240, after: 60 }))
       children.push(...markdownToParagraphs(docxLib, msg.text))
     } else if (msg.type === "bot") {
-      children.push(
-        new Paragraph({ children: [new TextRun({ text: "Prof Amira", bold: true, color: "9333EA" })], spacing: { before: 120, after: 60 } })
-      )
+      children.push(speakerLabelParagraph(docxLib, "Prof Amira", "9333EA", msg.createdAt, { before: 120, after: 60 }))
       children.push(...markdownToParagraphs(docxLib, msg.text))
     } else if (msg.type === "exercise") {
       const ex = msg.data || {}
@@ -137,9 +156,7 @@ function historyMessageToParagraphs(docxLib, msg) {
   const { Paragraph, TextRun } = docxLib
   const label = msg.role === "user" ? "Élève" : "Prof Amira"
   const color = msg.role === "user" ? "0D9488" : "9333EA"
-  const out = [
-    new Paragraph({ children: [new TextRun({ text: label, bold: true, color })], spacing: { before: 160, after: 60 } }),
-  ]
+  const out = [speakerLabelParagraph(docxLib, label, color, msg.created_at, { before: 160, after: 60 })]
 
   const payload = msg.payload || {}
   if (msg.kind === "exercise") {
@@ -172,7 +189,7 @@ export async function exportHistoryToDocx(conversations, { filename = "chatmaths
   if (title) children.push(new Paragraph({ text: title, heading: HeadingLevel.TITLE }))
 
   for (const conv of conversations) {
-    const subtitle = [conv.class_code, conv.chapter].filter(Boolean).join(" · ")
+    const subtitle = [conv.class_code, conv.chapter, formatExportDate(conv.created_at)].filter(Boolean).join(" · ")
     children.push(
       new Paragraph({ text: conv.title || "Conversation", heading: HeadingLevel.HEADING_1, spacing: { before: 360, after: 80 } })
     )

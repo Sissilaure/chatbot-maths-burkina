@@ -38,12 +38,11 @@ export default function ProfileCompletionGate({ token, onComplete }) {
       await updateProfile(token, {
         class_code: values.classCode,
         gender: values.gender,
-        birth_year: Number(values.birthYear),
+        birth_date: values.birthDate,
         is_candidat_libre: values.isCandidatLibre,
         school_name: values.isCandidatLibre ? null : values.schoolName,
-        region: values.region || null,
       })
-      onComplete()
+      onComplete(values.classCode)
     } catch (err) {
       setSubmitError(err.message || "Une erreur est survenue.")
     } finally {

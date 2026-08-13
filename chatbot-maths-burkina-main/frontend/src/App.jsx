@@ -31,8 +31,8 @@ import RemediationQuiz from "./components/RemediationQuiz.jsx"
 import ChatInput from "./components/ChatInput.jsx"
 import TypingIndicator from "./components/TypingIndicator.jsx"
 import WelcomeCard from "./components/WelcomeCard.jsx"
-import VideoGuide from "./components/VideoGuide.jsx"
-import HowItWorksSheet from "./components/HowItWorksSheet.jsx"
+import AboutPanel from "./components/AboutPanel.jsx"
+import BottomSheet from "./components/ui/BottomSheet.jsx"
 import BackgroundBlobs from "./components/BackgroundBlobs.jsx"
 import AuthGate from "./components/AuthGate.jsx"
 import ConsentGate from "./components/ConsentGate.jsx"
@@ -46,6 +46,8 @@ import { compressImageFile } from "./lib/image.js"
 import { getProfile, recordTopicVisit, recordStruggle, dismissStruggle, clearProfile } from "./lib/profile.js"
 import { getToken, logout as authLogout, restoreSession, AUTH_CHOICE_KEY } from "./lib/auth.js"
 import { buildHistoryUpTo } from "./lib/history.js"
+import { mapServerMessagesToClient } from "./lib/serverMessages.js"
+import { isSameDay, formatDaySeparator } from "./lib/dateFormat.js"
 import { useIsMobile } from "./lib/useMediaQuery.js"
 
 const STORAGE_KEY = "chatmaths-session-v1"
@@ -80,21 +82,40 @@ function deriveLastExchange(msgs) {
   return { lastQuestion: "", lastAnswer: "" }
 }
 
+/** Étiquette centrée entre deux messages de jours calendaires différents ("Aujourd'hui", "Hier",
+ * "12 août" — voir lib/dateFormat.js). */
+function DateSeparator({ iso }) {
+  return (
+    <div className="my-3 flex items-center justify-center">
+      <span className="rounded-full bg-base-200 px-3 py-1 text-xs font-medium text-base-content/50">
+        {formatDaySeparator(iso)}
+      </span>
+    </div>
+  )
+}
+
 export default function App() {
-  // Correctifs d'affichage mobile (voir RAPPORT_MOBILE.md) : plusieurs blocs (VideoGuide, les 3
-  // cartes explicatives) ne sont montés en ligne que sur bureau ; sur mobile ils rejoignent la
-  // feuille modale "Comment ça marche ?" pour que le champ de saisie reste visible sans défiler.
   const isMobile = useIsMobile()
-  const [howItWorksOpen, setHowItWorksOpen] = useState(false)
+  const [aboutOpen, setAboutOpen] = useState(false)
   const [theme, setTheme] = useState(() => localStorage.getItem("chatmaths-theme") || "chatmaths-light")
+  // Bureau uniquement : ouvert par défaut, préférence mémorisée (voir l'effet de sauvegarde
+  // plus bas). Sur mobile, Réglages/Historique ne sont plus jamais affichés en ligne — voir
+  // mobileSidebarOpen ci-dessous — donc cette préférence bureau ne les concerne plus du tout :
+  // avant ce correctif, les deux tailles d'écran partageaient le même état, et une préférence
+  // "ouvert" enregistrée sur bureau restait collée en rouvrant l'appli sur mobile, poussant le
+  // chat hors de l'écran au premier chargement (voir RAPPORT_MOBILE.md, correctif "Sidebar
+  // mobile en feuille modale").
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     const stored = localStorage.getItem("chatmaths-sidebar-open")
     if (stored !== null) return stored !== "false"
-    // Aucune préférence enregistrée : ouvert par défaut sur grand écran, replié sur mobile (le
-    // panneau s'empile AU-DESSUS du chat en dessous de lg — sans ça, l'élève doit descendre sous
-    // toute la colonne classe/chapitre/profil avant de voir où poser sa question).
     return typeof window !== "undefined" ? window.matchMedia("(min-width: 1024px)").matches : true
   })
+  // Mobile uniquement : Réglages/Historique vivent dans une feuille modale ouverte à la demande
+  // (bouton "PanelLeftOpen" du panneau de chat, ou les pastilles classe/chapitre — voir
+  // handleOpenSettings) plutôt qu'affichés en ligne au-dessus du chat, qui poussait le champ de
+  // saisie hors de l'écran au premier chargement. Jamais persisté : toujours fermé à l'arrivée,
+  // comme la feuille "⋯" de ChatInput.
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
   // Comptes élèves (optionnel) : voir handleAuthenticated/handleContinueAsGuest plus bas.
   const [authChecking, setAuthChecking] = useState(() => localStorage.getItem(AUTH_CHOICE_KEY) === "authenticated")
@@ -139,6 +160,11 @@ export default function App() {
   const [activePhoto, setActivePhoto] = useState(null)
   const [profile, setProfile] = useState(() => getProfile())
   const [toast, setToast] = useState(null)
+  // Contrôle l'affichage du contrôle de changement de classe dans ProfilePanel (voir Sidebar.jsx :
+  // le lien « Changer » de la ligne classe en lecture seule bascule cet état, plutôt que de gérer
+  // l'ouverture localement dans ProfilePanel, pour pouvoir aussi ramener la sidebar mobile sur
+  // l'onglet Historique — où vit ProfilePanel — au même moment.
+  const [classEditOpen, setClassEditOpen] = useState(false)
 
   // Suivi séparé de la dernière question/réponse texte pour "Simplifie"
   // (le champ de saisie est vidé après l'envoi, donc on ne peut pas s'y fier)
@@ -242,6 +268,10 @@ export default function App() {
         setRole(session.role)
         setConsentOk(session.consentOk !== false)
         setProfileComplete(session.profileComplete !== false)
+        // La classe est fixée au compte (app.users.class_code) : on ne la redemande plus, on
+        // reprend celle du compte plutôt que la dernière classe choisie en mode invité sur cet
+        // appareil (voir STORAGE_KEY plus haut, qui reste dédié aux sessions invité).
+        if (session.classCode) setClassCode(session.classCode)
       } else {
         setShowAuthGate(true)
       }
@@ -308,23 +338,23 @@ export default function App() {
   }
 
   function pushUserMessage(text, imageUrl = null) {
-    setMessages((prev) => [...prev, { type: "user", text, sources: [], imageUrl }])
+    setMessages((prev) => [...prev, { type: "user", text, sources: [], imageUrl, createdAt: new Date().toISOString() }])
   }
 
   function pushBotMessage(text, sources = [], kind = "chat") {
-    setMessages((prev) => [...prev, { type: "bot", text, sources, kind }])
+    setMessages((prev) => [...prev, { type: "bot", text, sources, kind, createdAt: new Date().toISOString() }])
   }
 
   function pushExerciseMessage(data) {
-    setMessages((prev) => [...prev, { type: "exercise", data }])
+    setMessages((prev) => [...prev, { type: "exercise", data, createdAt: new Date().toISOString() }])
   }
 
   function pushRemediationMessage(data) {
-    setMessages((prev) => [...prev, { type: "remediation", data }])
+    setMessages((prev) => [...prev, { type: "remediation", data, createdAt: new Date().toISOString() }])
   }
 
   function pushBotError(text) {
-    setMessages((prev) => [...prev, { type: "bot", text, sources: [], kind: "error" }])
+    setMessages((prev) => [...prev, { type: "bot", text, sources: [], kind: "error", createdAt: new Date().toISOString() }])
   }
 
   function showToast(text, kind = "success") {
@@ -378,12 +408,23 @@ export default function App() {
   async function openConversation(id) {
     const token = getToken()
     const conv = await getConversation(token, id)
-    setMessages(conv.messages)
+    // Les messages renvoyés par le serveur (role/kind/content/payload, voir database.get_messages)
+    // ont une forme différente de celle attendue par l'interface (type/text/data/sources, voir
+    // MessageBubble.jsx/ExerciseCard.jsx/RemediationQuiz.jsx) — sans cette conversion, rouvrir une
+    // conversation affichait des bulles vides (bug corrigé ici, voir lib/serverMessages.js).
+    const mapped = mapServerMessagesToClient(conv.messages)
+    setMessages(mapped)
     setActiveConv(id)
     setActivePhoto(null)
-    if (conv.class_level) setClassCode(conv.class_level)
+    // Un compte connecté est fixé à sa classe (voir plus haut) : rouvrir une conversation plus
+    // ancienne, éventuellement créée sous une autre classe (avant un changement via le profil),
+    // ne doit jamais l'écraser — elle garde son class_code d'origine en base, affiché tel quel
+    // dans son titre, mais les réponses suivantes restent ancrées sur la classe ACTUELLE du
+    // compte (le serveur l'impose de toute façon, voir _resolve_class_level côté backend). Seul
+    // un invité (sans classe de compte) continue de suivre la classe de la conversation rouverte.
+    if (!user && conv.class_level) setClassCode(conv.class_level)
     if (conv.chapter) setChapitre(conv.chapter)
-    const { lastQuestion: lq, lastAnswer: la } = deriveLastExchange(conv.messages)
+    const { lastQuestion: lq, lastAnswer: la } = deriveLastExchange(mapped)
     setLastQuestion(lq)
     setLastAnswer(la)
   }
@@ -426,11 +467,14 @@ export default function App() {
     return false
   }
 
-  function handleAuthenticated({ username, role: userRole, consentOk: sessionConsentOk, profileComplete: sessionProfileComplete }) {
+  function handleAuthenticated({ username, role: userRole, consentOk: sessionConsentOk, profileComplete: sessionProfileComplete, classCode: sessionClassCode }) {
     setUser(username)
     setRole(userRole)
     setConsentOk(sessionConsentOk !== false)
     setProfileComplete(sessionProfileComplete !== false)
+    // Classe fixée au compte (fiche d'inscription, ou déjà présente pour une reconnexion) : voir
+    // la même logique côté restauration de session plus haut.
+    if (sessionClassCode) setClassCode(sessionClassCode)
     setShowAuthGate(false)
   }
 
@@ -651,11 +695,11 @@ export default function App() {
     setSimplifyingIndex(null)
   }
 
-  /** Ouvre la sidebar sur l'onglet "Réglages" (mobile) — utilisé par les pastilles classe/chapitre
-   * de ChatInput, voir RAPPORT_MOBILE.md §5. */
+  /** Ouvre la feuille Réglages/Historique sur l'onglet "Réglages" (mobile) — utilisé par les
+   * pastilles classe/chapitre de ChatInput, voir RAPPORT_MOBILE.md §5. */
   function handleOpenSettings() {
     setSidebarMobileTab("reglages")
-    setSidebarOpen(true)
+    setMobileSidebarOpen(true)
   }
 
   /** Génère UN exercice (pas cinq d'un coup, voir RAPPORT_MOBILE.md §7 : cinq écrans de
@@ -795,6 +839,16 @@ export default function App() {
     handleSend({ question: struggle.question, classCode: struggle.classCode, chapitre: struggle.chapitre })
   }
 
+  /** Après un changement de classe validé depuis le profil (voir ProfilePanel.jsx, PATCH
+   * /api/profile) : le chapitre courant n'a probablement pas de sens dans la nouvelle classe
+   * (les intitulés de chapitres diffèrent d'une classe à l'autre), donc on le vide plutôt que de
+   * laisser un choix incohérent affiché. */
+  function handleClassChanged(newClassCode) {
+    setClassCode(newClassCode)
+    setChapitre("")
+    setClassEditOpen(false)
+  }
+
   function handleDismissStruggle(index) {
     if (user) {
       // Profil serveur (propre au compte) : pas d'endpoint de suppression dédié, on masque
@@ -885,7 +939,17 @@ export default function App() {
     return <ConsentGate token={getToken()} onAccepted={() => setConsentOk(true)} />
   }
   if (user && !profileComplete) {
-    return <ProfileCompletionGate token={getToken()} onComplete={() => setProfileComplete(true)} />
+    return (
+      <ProfileCompletionGate
+        token={getToken()}
+        onComplete={(newClassCode) => {
+          setProfileComplete(true)
+          // Fraîchement complétée : ce compte a maintenant une classe fixée, à reprendre tout de
+          // suite plutôt que d'attendre un futur rechargement de page (voir restoreSession plus haut).
+          if (newClassCode) setClassCode(newClassCode)
+        }}
+      />
+    )
   }
 
   if (role === "decideur") {
@@ -920,46 +984,61 @@ export default function App() {
         </div>
       )}
 
-      <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-4 p-3 sm:p-4 lg:flex-row lg:p-6">
-        <AnimatePresence initial={false}>
-          {sidebarOpen && (
-            <motion.div
-              key="sidebar"
-              initial={{ opacity: 0, width: 0 }}
-              animate={{ opacity: 1, width: "auto" }}
-              exit={{ opacity: 0, width: 0 }}
-              transition={{ duration: 0.2, ease: "easeOut" }}
-              className="shrink-0 overflow-hidden"
-            >
-              <Sidebar
-                classes={classes}
-                classCode={classCode}
-                setClassCode={(c) => {
-                  setClassCode(c)
-                  setChapitre("")
-                }}
-                chapters={chapters}
-                chapitre={chapitre}
-                setChapitre={setChapitre}
-                difficulty={difficulty}
-                setDifficulty={setDifficulty}
-                onReset={handleReset}
-                profile={profile}
-                onResumeTopic={handleResumeTopic}
-                onReviewStruggle={handleReviewStruggle}
-                onDismissStruggle={handleDismissStruggle}
-                user={user}
-                conversations={conversations}
-                activeConversationId={activeConversationId}
-                onSelectConversation={handleSelectConversation}
-                onDeleteConversation={handleDeleteConversation}
-                onNewConversation={handleNewConversation}
-                mobileTab={sidebarMobileTab}
-                onMobileTabChange={setSidebarMobileTab}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/* max-md:px-1.5 : sous 768px, la marge par défaut (p-3, 12px) laissait le champ de saisie
+          de ChatInput sous les 60% de largeur visés à 360px même après avoir resserré son propre
+          padding interne (voir RAPPORT_MOBILE.md §6, addendum 2026-08-13) — ces 12px de marge
+          externe, communs à toute la mise en page (Sidebar + zone de chat), pesaient plus que le
+          padding propre à ChatInput dans le calcul. */}
+      <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-4 max-md:px-1.5 max-md:py-3 sm:p-4 lg:flex-row lg:p-6">
+        {/* Bureau uniquement : sur mobile, ce même bloc (Réglages/Historique) vit désormais dans
+            une feuille modale ouverte à la demande (voir plus bas) — sinon il s'empile AU-DESSUS
+            du chat et pousse le champ de saisie hors du premier écran, exactement comme la feuille
+            "⋯" de ChatInput évite ce même problème pour les actions secondaires. */}
+        {!isMobile && (
+          <AnimatePresence initial={false}>
+            {sidebarOpen && (
+              <motion.div
+                key="sidebar"
+                initial={{ opacity: 0, width: 0 }}
+                animate={{ opacity: 1, width: "auto" }}
+                exit={{ opacity: 0, width: 0 }}
+                transition={{ duration: 0.2, ease: "easeOut" }}
+                className="shrink-0 overflow-hidden"
+              >
+                <Sidebar
+                  classes={classes}
+                  classCode={classCode}
+                  setClassCode={(c) => {
+                    setClassCode(c)
+                    setChapitre("")
+                  }}
+                  chapters={chapters}
+                  chapitre={chapitre}
+                  setChapitre={setChapitre}
+                  difficulty={difficulty}
+                  setDifficulty={setDifficulty}
+                  onReset={handleReset}
+                  profile={profile}
+                  onResumeTopic={handleResumeTopic}
+                  onReviewStruggle={handleReviewStruggle}
+                  onDismissStruggle={handleDismissStruggle}
+                  user={user}
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  onSelectConversation={handleSelectConversation}
+                  onDeleteConversation={handleDeleteConversation}
+                  onNewConversation={handleNewConversation}
+                  mobileTab={sidebarMobileTab}
+                  onMobileTabChange={setSidebarMobileTab}
+                  classEditOpen={classEditOpen}
+                  onOpenClassEdit={() => setClassEditOpen(true)}
+                  onCloseClassEdit={() => setClassEditOpen(false)}
+                  onClassChanged={handleClassChanged}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        )}
 
         <main className="flex min-h-[70vh] flex-1 flex-col overflow-hidden rounded-2xl border border-base-300/60 bg-base-100/60 shadow-sm">
           <div className="flex items-center justify-between border-b border-base-300/50 px-4 py-2 sm:px-6">
@@ -967,10 +1046,10 @@ export default function App() {
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => setSidebarOpen((o) => !o)}
-                title={sidebarOpen ? "Réduire le panneau latéral" : "Afficher le panneau latéral"}
+                onClick={() => (isMobile ? setMobileSidebarOpen(true) : setSidebarOpen((o) => !o))}
+                title={isMobile ? "Réglages et historique" : sidebarOpen ? "Réduire le panneau latéral" : "Afficher le panneau latéral"}
               >
-                {sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+                {!isMobile && sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
               </Button>
               <p className="truncate text-xs font-medium text-base-content/50">
                 {classeNom ? `${classeNom}${chapitre ? " · " + chapitre : ""}` : "Discussion libre"}
@@ -985,46 +1064,46 @@ export default function App() {
           </div>
 
           <div ref={chatRef} className="scrollbar-thin flex-1 overflow-y-auto p-4 sm:p-6">
-            {/* Sur mobile, VideoGuide ne s'affiche plus en ligne d'emblée (voir RAPPORT_MOBILE.md
-                §1) : elle rejoint la feuille "Comment ça marche ?" (HowItWorksSheet, plus bas),
-                ouverte depuis WelcomeCard. Sur bureau, comportement inchangé. */}
-            {!isMobile && <VideoGuide />}
             <div ref={sessionContentRef} className="space-y-4">
               {messages.length === 0 && (
                 <WelcomeCard
                   personalizedMessage={user ? greetingMessage : null}
                   chapitre={chapitre}
                   onSuggestionClick={handleSuggestionClick}
-                  onOpenHowItWorks={() => setHowItWorksOpen(true)}
+                  onOpenAbout={() => setAboutOpen(true)}
                 />
               )}
 
               <AnimatePresence initial={false}>
-                {messages.map((msg, i) =>
-                  msg.type === "exercise" ? (
-                    <ExerciseCard
-                      key={i}
-                      exercise={msg.data}
-                      onNext={i === messages.length - 1 ? handleExercise : null}
-                      generatingNext={i === messages.length - 1 && loading}
-                    />
-                  ) : msg.type === "remediation" ? (
-                    <RemediationQuiz
-                      key={i}
-                      data={msg.data}
-                      onSubmitResults={(answers) => handleRemediationResults(msg.data, answers)}
-                    />
-                  ) : (
-                    <MessageBubble
-                      key={i}
-                      message={msg}
-                      onRegenerate={msg.type === "bot" && i > 0 && messages[i - 1]?.type === "user" ? () => handleRegenerate(i) : null}
-                      regenerating={regeneratingIndex === i}
-                      onSimplify={msg.type === "bot" ? () => handleSimplify(i) : null}
-                      simplifying={simplifyingIndex === i}
-                    />
+                {messages.map((msg, i) => {
+                  const prev = messages[i - 1]
+                  const showDateSeparator = msg.createdAt && (!prev?.createdAt || !isSameDay(prev.createdAt, msg.createdAt))
+                  return (
+                    <React.Fragment key={i}>
+                      {showDateSeparator && <DateSeparator iso={msg.createdAt} />}
+                      {msg.type === "exercise" ? (
+                        <ExerciseCard
+                          exercise={msg.data}
+                          onNext={i === messages.length - 1 ? handleExercise : null}
+                          generatingNext={i === messages.length - 1 && loading}
+                        />
+                      ) : msg.type === "remediation" ? (
+                        <RemediationQuiz
+                          data={msg.data}
+                          onSubmitResults={(answers) => handleRemediationResults(msg.data, answers)}
+                        />
+                      ) : (
+                        <MessageBubble
+                          message={msg}
+                          onRegenerate={msg.type === "bot" && i > 0 && messages[i - 1]?.type === "user" ? () => handleRegenerate(i) : null}
+                          regenerating={regeneratingIndex === i}
+                          onSimplify={msg.type === "bot" ? () => handleSimplify(i) : null}
+                          simplifying={simplifyingIndex === i}
+                        />
+                      )}
+                    </React.Fragment>
                   )
-                )}
+                })}
               </AnimatePresence>
             </div>
 
@@ -1036,6 +1115,7 @@ export default function App() {
           </div>
 
           <ChatInput
+            user={user}
             question={question}
             setQuestion={setQuestion}
             onSend={handleSend}
@@ -1062,10 +1142,59 @@ export default function App() {
       <footer className="px-4 pb-4 text-center text-xs text-base-content/40">
         Prof Amira, ton prof infatigable · Programme officiel du Burkina Faso (6ème à Terminale)
         <br />
-        Un produit Hakili Lab
+        Un produit Hakili Lab ·{" "}
+        <button
+          type="button"
+          onClick={() => setAboutOpen(true)}
+          className="underline decoration-dotted underline-offset-2 hover:text-primary"
+        >
+          Comment ça marche ?
+        </button>
       </footer>
 
-      <HowItWorksSheet open={howItWorksOpen} onClose={() => setHowItWorksOpen(false)} />
+      <AboutPanel open={aboutOpen} onClose={() => setAboutOpen(false)} />
+
+      {/* Réglages/Historique mobile : voir le commentaire sur mobileSidebarOpen plus haut. Sidebar
+          détecte elle-même le mode mobile et affiche ses 2 onglets nus (pas de colonnes bureau)
+          — inchangé, seul son EMPLACEMENT change (feuille modale plutôt qu'en ligne). */}
+      {isMobile && (
+        <BottomSheet
+          open={mobileSidebarOpen}
+          onClose={() => setMobileSidebarOpen(false)}
+          title="Réglages et historique"
+        >
+          <Sidebar
+            classes={classes}
+            classCode={classCode}
+            setClassCode={(c) => {
+              setClassCode(c)
+              setChapitre("")
+            }}
+            chapters={chapters}
+            chapitre={chapitre}
+            setChapitre={setChapitre}
+            difficulty={difficulty}
+            setDifficulty={setDifficulty}
+            onReset={handleReset}
+            profile={profile}
+            onResumeTopic={handleResumeTopic}
+            onReviewStruggle={handleReviewStruggle}
+            onDismissStruggle={handleDismissStruggle}
+            user={user}
+            conversations={conversations}
+            activeConversationId={activeConversationId}
+            onSelectConversation={handleSelectConversation}
+            onDeleteConversation={handleDeleteConversation}
+            onNewConversation={handleNewConversation}
+            mobileTab={sidebarMobileTab}
+            onMobileTabChange={setSidebarMobileTab}
+            classEditOpen={classEditOpen}
+            onOpenClassEdit={() => setClassEditOpen(true)}
+            onCloseClassEdit={() => setClassEditOpen(false)}
+            onClassChanged={handleClassChanged}
+          />
+        </BottomSheet>
+      )}
 
       <AnimatePresence>
         {toast && (

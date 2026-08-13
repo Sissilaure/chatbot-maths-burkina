@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, model_validator
 from typing import Optional, List
+from datetime import date
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -171,10 +172,9 @@ class RegisterRequest(BaseModel):
     # route, pas sur un CHECK/NOT NULL en base — voir PATCH /api/profile pour leur régularisation.
     class_code: str
     gender: str  # 'F' / 'M' — choix obligatoire, pas d'option "préfère ne pas répondre"
-    birth_year: int
+    birth_date: date
     is_candidat_libre: bool
     school_name: Optional[str] = None
-    region: Optional[str] = None
     consent_accepted: bool
 
     @model_validator(mode="after")
@@ -200,6 +200,10 @@ class AuthResponse(BaseModel):
     # dans auth.py, et ConsentNotice.jsx / ProfileCompletionGate.jsx côté frontend).
     consent_ok: bool = True
     profile_complete: bool = True
+    # Classe fixée au compte (app.users.class_code) : le frontend s'en sert pour ne plus jamais
+    # redemander la classe à un élève déjà connecté (voir App.jsx). None seulement pour un compte
+    # migré dont la fiche n'est pas encore complète (auquel cas profile_complete vaut déjà False).
+    class_code: Optional[str] = None
 
 class CreateConversationRequest(BaseModel):
     class_level: str = ""
@@ -229,9 +233,8 @@ class StruggleRequest(BaseModel):
 class ProfileUpdateRequest(BaseModel):
     class_code: Optional[str] = None
     gender: Optional[str] = None
-    birth_year: Optional[int] = None
+    birth_date: Optional[date] = None
     is_candidat_libre: Optional[bool] = None
-    region: Optional[str] = None
     school_name: Optional[str] = None
 
 @app.get("/")
@@ -278,7 +281,7 @@ def _ensure_authenticated_user_ready(user):
     voir plus bas) : un invité (user=None) n'est jamais concerné, il continue comme avant. Un
     compte connecté doit en revanche avoir accepté le consentement courant ET avoir une fiche
     complète avant que quoi que ce soit ne soit persisté en son nom — les deux concernent surtout
-    les comptes migrés depuis SQLite (consent_version et class_code/gender/birth_year à NULL, voir
+    les comptes migrés depuis SQLite (consent_version et class_code/gender/birth_date à NULL, voir
     migrate_sqlite_to_pg.py). /api/course n'a PAS cette porte : elle ne stocke jamais rien.
     /api/profile et /api/consent* non plus : ce sont justement les routes qui permettent à un
     compte bloqué de se débloquer, elles ne peuvent pas dépendre d'un état déjà à jour.
@@ -302,6 +305,19 @@ def _ensure_authenticated_user_ready(user):
                 "message": "Complète ta fiche d'inscription avant de continuer.",
             },
         )
+
+
+def _resolve_class_level(user, client_class_level: str) -> str:
+    """Un compte élève est fixé à app.users.class_code (fiche d'inscription, modifiable seulement
+    via PATCH /api/profile) : ces routes ignorent donc toujours la classe envoyée par le client
+    pour un compte connecté et utilisent celle du compte à la place — sans ça, la contrainte serait
+    trivialement contournable en changeant class_level dans la requête. Appelée après
+    _ensure_authenticated_user_ready(user), qui garantit que user["class_code"] n'est jamais None
+    ici pour un compte connecté. Un invité (user=None) garde le comportement précédent : la valeur
+    du client, facultative."""
+    if user:
+        return user["class_code"]
+    return client_class_level.strip()
 
 
 def _persist_exchange_best_effort(user, conversation_id, question, answer, **meta):
@@ -352,7 +368,7 @@ def ask_question(request: Request, payload: QuestionRequest, user=Depends(auth.g
     si l'élève ne les précise pas, Claude répond en mode général."""
     _ensure_authenticated_user_ready(user)
     try:
-        class_level = payload.class_level.strip()
+        class_level = _resolve_class_level(user, payload.class_level)
         chapter = payload.chapter.strip()
 
         if class_level and class_level not in get_classes():
@@ -388,7 +404,7 @@ def ask_question_stream(request: Request, payload: QuestionRequest, user=Depends
     """Variante en streaming de /api/chat : renvoie la réponse au fil de l'eau (Server-Sent Events)
     afin que l'élève voie le texte s'écrire progressivement plutôt que d'attendre le bloc complet."""
     _ensure_authenticated_user_ready(user)
-    class_level = payload.class_level.strip()
+    class_level = _resolve_class_level(user, payload.class_level)
     chapter = payload.chapter.strip()
 
     if class_level and class_level not in get_classes():
@@ -437,7 +453,7 @@ def get_remediation(request: Request, payload: RemediationRequest, user=Depends(
     avant de continuer, et pointe les notions précises à revoir sinon."""
     _ensure_authenticated_user_ready(user)
     try:
-        class_level = payload.class_level.strip()
+        class_level = _resolve_class_level(user, payload.class_level)
         chapter = payload.chapter.strip()
 
         if class_level not in get_classes():
@@ -491,7 +507,7 @@ def get_summary(request: Request, payload: SummaryRequest, user=Depends(auth.get
     sinon du chapitre choisi."""
     _ensure_authenticated_user_ready(user)
     try:
-        class_level = payload.class_level.strip()
+        class_level = _resolve_class_level(user, payload.class_level)
         chapter = payload.chapter.strip()
 
         if class_level and class_level not in get_classes():
@@ -522,16 +538,17 @@ def generate_exercise(request: Request, payload: ExerciseRequest, user=Depends(a
     valeurs par défaut sinon)."""
     _ensure_authenticated_user_ready(user)
     try:
-        if payload.class_level not in get_classes():
+        class_level = _resolve_class_level(user, payload.class_level)
+        if class_level not in get_classes():
             raise HTTPException(status_code=400, detail="Invalid class level")
 
         chapter = payload.chapter.strip()
-        if chapter and chapter not in get_chapters(payload.class_level):
+        if chapter and chapter not in get_chapters(class_level):
             raise HTTPException(status_code=400, detail="Invalid chapter for this class")
 
         history = [turn.dict() for turn in payload.history]
         response = rag_system.generate_exercise(
-            payload.class_level,
+            class_level,
             chapter,
             payload.difficulty,
             history=history
@@ -541,7 +558,7 @@ def generate_exercise(request: Request, payload: ExerciseRequest, user=Depends(a
             user, payload.conversation_id, "assistant",
             response.get("enonce") or f"Exercice — {response.get('chapter', chapter)}",
             kind="exercise", payload=response,
-            class_code=payload.class_level, chapter=response.get("chapter") or chapter or None,
+            class_code=class_level, chapter=response.get("chapter") or chapter or None,
             difficulty=response.get("difficulty"),
         )
 
@@ -577,6 +594,7 @@ async def explain_exercise_photo(
     répondre à des questions de suivi comme "résous la question a" sur cette même photo."""
     _ensure_authenticated_user_ready(user)
     try:
+        class_level = _resolve_class_level(user, class_level)
         if class_level and class_level not in get_classes():
             raise HTTPException(status_code=400, detail="Invalid class level")
         if chapter and class_level and chapter not in get_chapters(class_level):
@@ -624,16 +642,17 @@ def simplify_answer(request: Request, payload: SimplifyRequest, user=Depends(aut
     """Simplify an answer for better understanding"""
     _ensure_authenticated_user_ready(user)
     try:
+        class_level = _resolve_class_level(user, payload.class_level)
         simplified = rag_system.simplify_answer(
             payload.question,
             payload.answer,
-            payload.class_level,
+            class_level,
             payload.chapter
         )
 
         _persist_message_best_effort(
             user, payload.conversation_id, "assistant", simplified,
-            kind="simplify", class_code=payload.class_level or None, chapter=payload.chapter or None,
+            kind="simplify", class_code=class_level or None, chapter=payload.chapter or None,
         )
 
         return {
@@ -717,8 +736,19 @@ def initialize_sample_documents(decideur=Depends(auth.require_decideur)):
 
 MIN_PASSWORD_LENGTH = 8
 VALID_GENDERS = {"F", "M"}
-MIN_BIRTH_YEAR = 1950
-MAX_BIRTH_YEAR = 2020
+# Bornes de plausibilité d'une date de naissance, en âge (pas en année fixe comme l'ancien
+# MIN/MAX_BIRTH_YEAR) : un élève de 6 à 80 ans, cohérent avec le programme couvert (6ème à
+# Terminale) tout en laissant de la marge pour un candidat libre plus âgé.
+MIN_AGE_YEARS = 6
+MAX_AGE_YEARS = 80
+
+
+def _is_plausible_birth_date(d: date) -> bool:
+    if d > date.today():
+        return False
+    today = date.today()
+    age = today.year - d.year - ((today.month, today.day) < (d.month, d.day))
+    return MIN_AGE_YEARS <= age <= MAX_AGE_YEARS
 
 # ============================================================================
 # COMPTES ÉLÈVES (auth optionnelle : nom d'utilisateur/mot de passe, JWT bearer)
@@ -738,28 +768,27 @@ def register(request: Request, payload: RegisterRequest):
     if not payload.consent_accepted:
         raise HTTPException(status_code=400, detail="Le consentement est requis pour créer un compte")
 
-    # class_code/gender/birth_year sont désormais obligatoires au niveau du type (voir
+    # class_code/gender/birth_date sont désormais obligatoires au niveau du type (voir
     # RegisterRequest) : Pydantic a déjà renvoyé 422 si l'un est absent. Il reste à vérifier que
-    # les VALEURS fournies sont valides (une classe existante, un genre de la liste, une année
+    # les VALEURS fournies sont valides (une classe existante, un genre de la liste, une date
     # plausible) — ce que le type seul ne garantit pas.
     if payload.class_code not in get_classes():
         raise HTTPException(status_code=400, detail="Invalid class level")
     if payload.gender not in VALID_GENDERS:
         raise HTTPException(status_code=400, detail="Genre invalide")
-    if not (MIN_BIRTH_YEAR <= payload.birth_year <= MAX_BIRTH_YEAR):
-        raise HTTPException(status_code=400, detail="Année de naissance invalide")
+    if not _is_plausible_birth_date(payload.birth_date):
+        raise HTTPException(status_code=400, detail="Date de naissance invalide")
 
     user = database.create_user(
         username,
         auth.hash_password(payload.password),
         class_code=payload.class_code or None,
         gender=payload.gender,
-        birth_year=payload.birth_year,
+        birth_date=payload.birth_date,
         is_candidat_libre=payload.is_candidat_libre,
         # Le champ établissement n'a pas de sens pour un candidat libre : on l'ignore plutôt que
         # de laisser une saisie incohérente traîner en base.
         school_name=None if payload.is_candidat_libre else payload.school_name,
-        region=payload.region,
         consent_version=CONSENT_VERSION,
     )
     if not user:
@@ -776,6 +805,7 @@ def register(request: Request, payload: RegisterRequest):
         public_code=user["public_code"],
         consent_ok=True,
         profile_complete=True,
+        class_code=user["class_code"],
     )
 
 @app.post("/api/auth/login", response_model=AuthResponse)
@@ -801,6 +831,7 @@ def login(request: Request, payload: LoginRequest):
         public_code=user["public_code"],
         consent_ok=auth.is_consent_ok(user),
         profile_complete=auth.is_profile_complete(user),
+        class_code=user["class_code"],
     )
 
 @app.get("/api/auth/me")
@@ -811,6 +842,7 @@ def get_me(user=Depends(auth.get_current_user)):
         "public_code": user["public_code"],
         "consent_ok": auth.is_consent_ok(user),
         "profile_complete": auth.is_profile_complete(user),
+        "class_code": user["class_code"],
     }
 
 
@@ -854,8 +886,8 @@ def update_profile(payload: ProfileUpdateRequest, user=Depends(auth.get_current_
         raise HTTPException(status_code=400, detail="Invalid class level")
     if payload.gender is not None and payload.gender not in VALID_GENDERS:
         raise HTTPException(status_code=400, detail="Genre invalide")
-    if payload.birth_year is not None and not (MIN_BIRTH_YEAR <= payload.birth_year <= MAX_BIRTH_YEAR):
-        raise HTTPException(status_code=400, detail="Année de naissance invalide")
+    if payload.birth_date is not None and not _is_plausible_birth_date(payload.birth_date):
+        raise HTTPException(status_code=400, detail="Date de naissance invalide")
 
     fields = payload.dict(exclude_unset=True)
     updated = database.update_profile_fields(user["id"], **fields)
@@ -864,9 +896,8 @@ def update_profile(payload: ProfileUpdateRequest, user=Depends(auth.get_current_
     return {
         "class_code": updated.get("class_code"),
         "gender": updated.get("gender"),
-        "birth_year": updated.get("birth_year"),
+        "birth_date": updated.get("birth_date"),
         "is_candidat_libre": updated.get("is_candidat_libre"),
-        "region": updated.get("region"),
         "school_raw": updated.get("school_raw"),
     }
 

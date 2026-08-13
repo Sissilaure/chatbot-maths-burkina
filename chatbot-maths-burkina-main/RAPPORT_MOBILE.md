@@ -1,6 +1,7 @@
 # Rapport — Correctifs d'affichage mobile (Chat'Maths)
 
-Dernière mise à jour : 2026-08-10
+Dernière mise à jour : 2026-08-13 — voir addenda en fin de §2 et §6 (AboutPanel, barre d'outils
+resserrée, modale bureau décentrée, Réglages/Historique en feuille sur mobile)
 
 ## 1. Résumé (10 lignes)
 
@@ -44,6 +45,30 @@ section, tests et build vérifiés à chaque étape.
 | `frontend/src/components/GeometryFigure.jsx` | SVG en largeur fluide (`width:100%; height:auto`, `preserveAspectRatio="xMidYMid meet"`, `max-width:320px`) au lieu d'une taille fixe en pixels — le tracé (viewBox) ne change pas. |
 | `frontend/src/components/BackgroundBlobs.jsx` | Ne se monte plus sous 768px (`useIsMobile()`). |
 | `frontend/src/styles/main.css` | Dégradé discret sur le bord droit de `.katex-display` et des tableaux Markdown (formules/tableaux larges) pour signaler qu'il y a une suite, sans réduire la taille de police. Règle `prefers-reduced-motion` étendue à une condition de largeur (`max-width: 767px`) pour les animations d'ambiance en boucle. |
+
+### Addendum 2026-08-13 — AboutPanel et resserrement de la barre d'outils
+
+`HowItWorksSheet.jsx` (créé dans ce chantier, voir tableau ci-dessus) est **supprimé** : entièrement
+remplacé par `AboutPanel.jsx`, qui reprend son contenu (vidéo + 3 cartes) et y ajoute une
+présentation du projet et un rappel du texte de consentement — voir RAPPORT_MIGRATION.md §14.2 pour
+le détail fonctionnel. Contrairement à `HowItWorksSheet` (mobile uniquement, bureau gardait vidéo +
+cartes affichées en ligne en permanence), `AboutPanel` sert désormais les DEUX tailles d'écran, en
+feuille modale sur mobile et en fenêtre centrée sur bureau.
+
+| Fichier | Rôle |
+|---|---|
+| `frontend/src/components/AboutPanel.jsx` | Remplace `HowItWorksSheet.jsx` (supprimé) : vidéo, 3 cartes, présentation du projet, rappel de consentement. Choisit `BottomSheet` ou `Modal` selon `useIsMobile()`. |
+| `frontend/src/components/ui/Modal.jsx` | Pendant bureau de `BottomSheet.jsx` (même contrat open/onClose/title/children) — fenêtre centrée plutôt que remontant du bas. |
+| `frontend/src/lib/serverMessages.js` | `mapServerMessagesToClient` — conversion des messages serveur vers la forme attendue par l'interface (voir RAPPORT_MIGRATION.md §14.4, bug corrigé). |
+| `frontend/src/lib/dateFormat.js` | `formatMessageTime`/`formatDaySeparator`/`isSameDay`, utilisés par `MessageBubble.jsx` et `App.jsx` (voir RAPPORT_MIGRATION.md §14.3). |
+
+| Fichier | Ce qui a changé |
+|---|---|
+| `frontend/src/components/WelcomeCard.jsx` | Les 3 cartes explicatives (bureau) et le bouton "Comment ça marche ?" (mobile) sont remplacés par un lien unique, identique sur les deux tailles d'écran, ouvrant `AboutPanel`. `ONBOARDING_STEPS`/`stepVariants` retirés (plus utilisés ici). |
+| `frontend/src/App.jsx` | `VideoGuide` ne s'affiche plus en ligne sur bureau ; `AboutPanel` remplace `HowItWorksSheet` ; lien "Comment ça marche ?" ajouté au pied de page ; état renommé `howItWorksOpen`→`aboutOpen`. |
+| `frontend/src/components/ChatInput.jsx` | Voir addendum §6 ci-dessous (padding/gap mobile resserrés, bouton d'envoi corrigé). |
+| `frontend/src/components/MessageBubble.jsx` | Heure sous chaque message (`formatMessageTime`). |
+| `frontend/src/lib/docx.js` | Heure de chaque message et date de chaque conversation dans les exports Word. |
 
 ## 3. Où est passée chaque action ? (à lire en premier)
 
@@ -150,3 +175,123 @@ les deux cas (invité et connecté).
   de défiler en interne — cause : absence de `min-width: 0` sur le conteneur flex de
   `MessageBubble`, un enfant flex ne rétrécissant jamais sous la largeur intrinsèque de son contenu
   par défaut. Corrigé dans le cadre du §8 (voir tableau des fichiers modifiés).
+- **Découvert le 2026-08-13, sans rapport avec le mobile mais bloquant pour l'horodatage des
+  messages (voir RAPPORT_MIGRATION.md §14.4)** : `App.jsx::openConversation` ne convertissait
+  jamais les messages renvoyés par le serveur (forme `role`/`kind`/`content`/`payload`) vers la
+  forme attendue par l'interface (`type`/`text`/`data`/`sources`) — rouvrir une conversation
+  affichait donc des bulles vides, un exercice/QCM historique ne réaffichait plus sa carte, et
+  "Simplifie" perdait le contexte de la dernière réponse. Corrigé par
+  `frontend/src/lib/serverMessages.js::mapServerMessagesToClient`.
+
+### Addendum 2026-08-13 — Barre d'outils mobile resserrée (icônes caméra/⋯, bouton d'envoi)
+
+Constat initial (mesuré, voir plus bas) : à 360px de large, avec le padding d'origine (`p-3`, 12px,
+plus 12px hérités du conteneur parent commun à toute la mise en page — voir plus bas) et
+l'espacement (`gap-2`, 8px), le champ de saisie n'occupait que ≈54% de la largeur de la ligne —
+sous le plancher de 60% visé — malgré des cibles tactiles caméra/⋯ déjà correctement à 44×44px.
+**Cause principale, pas mentionnée dans la consigne initiale** : le bouton d'envoi utilisait
+`size="lg"` (`px-5`, soit 20px de padding horizontal de chaque côté) au lieu de `size="icon"` —
+`min-w-[44px]` ne fait qu'imposer un plancher, pas un plafond, donc ce bouton mesurait en réalité
+≈58-60px de large sur mobile, pas 44px.
+
+Correctifs appliqués (mobile uniquement, via `isMobile`, déjà disponible dans `ChatInput.jsx`) :
+- Bouton d'envoi : `size={isMobile ? "icon" : "lg"}` — 44×44px sur mobile désormais, inchangé sur
+  bureau.
+- Icône caméra : 18px → 20px (alignée sur l'icône "⋯", déjà à 20px) — sans effet sur la largeur du
+  bouton (le padding, `p-2`, absorbe la différence, la cible reste 44×44px dans les deux cas).
+- Padding horizontal du conteneur `ChatInput` : `p-3` (12px) → `px-0.5` (2px) sur mobile seulement
+  (`py-3` inchangé).
+- Espacement entre les éléments de la ligne (⋯, caméra, champ, envoi) : `gap-2` (8px) → `gap-px`
+  (1px) sur mobile seulement.
+- **Padding du conteneur partagé Sidebar+zone de chat** (`App.jsx`, en dehors de `ChatInput.jsx`) :
+  `p-3` (12px) → `px-1.5 py-3` (6px horizontal) sous 768px (`max-md:`). Nécessaire en plus des
+  points ci-dessus : ces 12px de marge externe, communs à toute la mise en page (pas seulement au
+  champ de saisie), pesaient à eux seuls plus lourd dans le calcul que tout le padding propre à
+  `ChatInput`, et resserrer uniquement ce dernier ne suffisait pas à atteindre 60% même en
+  poussant son propre padding à 0.
+
+**Résultat mesuré** (pas seulement calculé cette fois : `chromium`/Playwright piloté en headless
+contre le serveur de dev, à 360×740 — voir méthode ci-dessous) :
+
+| Élément | Position/largeur mesurée |
+|---|---|
+| Bouton "⋯" | x=9, 44×44px |
+| Bouton caméra | x=54, 44×44px |
+| Champ de saisie | x=99, **207px de large** |
+| Bouton d'envoi | x=307, 44×44px |
+
+Ligne de contenu : de x=9 à x=351 (droite du bouton d'envoi), soit 342px. Champ de saisie 207px →
+**207 / 342 ≈ 60,5%**, au-dessus du plancher visé. Capture d'écran prise à l'appui (voir
+`03-mobile-toolbar` dans la session de vérification) : la barre reste lisible, chaque bouton garde
+un contour visuellement distinct malgré l'espacement de 1px entre eux.
+
+**Compromis assumé** : un espacement de 1px entre des cibles tactiles adjacentes de 44px, et un
+padding de bord d'écran de 2-6px, sont en dessous de ce que recommandent généralement les lignes
+directrices d'accessibilité tactile (habituellement ≥8px entre cibles voisines, même quand chaque
+cible individuelle atteint 44px) — accepté ici pour respecter la contrainte numérique explicite
+(champ ≥60% à 360px) sans jamais descendre une cible sous 44×44px, contrainte qui s'est révélée
+mathématiquement impossible à tenir sans cet espacement minimal une fois les 3 cibles fixes (⋯,
+caméra, envoi) et la marge externe partagée prises en compte. À valider sur un vrai téléphone avant
+mise en production ; si le risque de faux-clic s'avère gênant en usage réel, revoir plutôt le
+nombre de cibles toujours visibles (ex. fusionner caméra dans le menu "⋯") plutôt que de resserrer
+encore l'espacement.
+
+**Méthode de vérification** : contrairement au reste de ce rapport (voir §4, aucun outil de rendu
+disponible à l'époque), un navigateur headless (`chromium` via Playwright, installé pour l'occasion
+dans le répertoire de travail temporaire) a été piloté contre `npm run dev` pour cette vérification
+— captures d'écran et mesures de position/taille (`boundingBox()`) réelles, pas un calcul manuel.
+Utilisé aussi pour confirmer visuellement AboutPanel (feuille modale mobile / fenêtre centrée
+bureau) et l'affichage de l'heure sous les messages (voir RAPPORT_MIGRATION.md §14).
+
+### Addendum 2026-08-13 (suite) — Modale bureau décentrée, Réglages/Historique en feuille sur mobile
+
+Deux correctifs demandés après relecture visuelle par l'équipe (captures d'écran à l'appui), sur des
+points que ce rapport n'avait pas identifiés.
+
+**1. `ui/Modal.jsx` (AboutPanel, bureau) affichait sa boîte décalée en bas-à-droite du centre réel,
+pas centrée.** Cause : la boîte utilisait `left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2`
+(classes Tailwind, centrage par `transform`) ET était un `motion.div` animant `scale`/`y`
+(`initial`/`animate` framer-motion, qui pose sa propre valeur de `transform` en style inline).
+Un style inline l'emporte toujours sur une classe CSS ciblant la même propriété : le `transform`
+posé par framer-motion écrasait intégralement celui des classes Tailwind, laissant la boîte
+positionnée à `left: 50%; top: 50%` SANS le décalage compensatoire de -50%/-50% — son coin
+haut-gauche se retrouvait au centre de l'écran plutôt que son propre centre. Corrigé en centrant
+par flexbox (`fixed inset-0 flex items-center justify-center` sur le fond, la boîte est un enfant
+flex normal) : aucun conflit possible, cette technique ne touche jamais à `transform`. Vérifié par
+mesure réelle (Playwright, `boundingBox()`) à 1280×800 : centre de la boîte (640, 400) = centre du
+viewport (640, 400) exactement, décalage nul (avant correctif, décalage significatif dans les deux
+axes). Piège à surveiller pour tout futur composant combinant classes de centrage par `transform`
+et animation framer-motion sur ce même axe.
+
+**2. Sur mobile, Réglages/Historique (`Sidebar.jsx`, 2 onglets) s'affichaient EN LIGNE au-dessus du
+chat dès l'ouverture de l'appli** (si `sidebarOpen` valait `true` — voir plus bas pourquoi c'était
+fréquent), poussant le champ de saisie hors du premier écran : exactement le problème que la feuille
+"⋯" de `ChatInput.jsx` (§3 du tableau) avait déjà résolu pour les actions secondaires, mais qui
+subsistait ici. Cause plus profonde qu'un simple oubli d'état par défaut : `sidebarOpen` était
+**partagé entre bureau et mobile** — une préférence "ouvert" enregistrée sur bureau (son
+comportement normal, ouvert par défaut) restait collée en `localStorage` et s'appliquait aussi sur
+mobile à la prochaine visite, malgré la valeur par défaut initiale correcte (`matchMedia
+"(min-width: 1024px)"`, fermé sous ce seuil) — un simple correctif de valeur par défaut n'aurait
+donc pas suffi, tant que les deux tailles d'écran continuaient à lire/écrire la même clé.
+
+Correctif : deux états distincts dans `App.jsx`.
+- `sidebarOpen` (bureau uniquement désormais, comportement inchangé — colonne repliable à côté du
+  chat, préférence mémorisée).
+- `mobileSidebarOpen` (mobile uniquement, nouveau — jamais persisté, toujours fermé à l'arrivée).
+  Réglages/Historique quittent la mise en page en ligne et rejoignent une `BottomSheet` (la même
+  primitive que la feuille "⋯"), ouverte via le même bouton qui repliait/dépliait la colonne bureau
+  (icône `PanelLeftOpen`, en haut à gauche du panneau de chat — toujours le premier élément visible,
+  immédiatement accessible) ou via les pastilles classe/chapitre (`handleOpenSettings`, inchangé
+  dans son intention, redirigé vers `mobileSidebarOpen`). `Sidebar.jsx` lui-même n'a pas changé :
+  il détectait déjà le mode mobile pour afficher ses 2 onglets nus plutôt que ses colonnes bureau —
+  seul son EMPLACEMENT dans `App.jsx` change (feuille modale au lieu d'en ligne).
+
+Vérifié par capture d'écran réelle (Playwright, 375×667, session sans préférence enregistrée) :
+le champ de saisie est visible dès le premier écran, sans défiler ; le bouton `PanelLeftOpen` ouvre
+la feuille par-dessus le chat (pas en le repoussant) ; la feuille contient bien les 2 onglets
+Réglages/Historique inchangés.
+
+| Fichier | Ce qui a changé |
+|---|---|
+| `frontend/src/App.jsx` | `sidebarOpen` redevenu bureau-only ; nouvel état `mobileSidebarOpen` (jamais persisté) ; le bloc `Sidebar` en ligne n'est monté que si `!isMobile` ; nouvelle `BottomSheet` mobile-only contenant `Sidebar` ; bouton `PanelLeftOpen`/`handleOpenSettings` redirigés vers `mobileSidebarOpen` sur mobile. |
+| `frontend/src/components/ui/Modal.jsx` | Centrage par flexbox au lieu de `transform` (voir ci-dessus) — aucun changement de contrat (`open`/`onClose`/`title`/`children` inchangés). |

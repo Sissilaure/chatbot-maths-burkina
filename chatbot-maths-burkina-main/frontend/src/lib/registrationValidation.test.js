@@ -1,15 +1,20 @@
 import { describe, it, expect } from "vitest"
 import { emptyProfileFields, validateProfileFields, isProfileFormComplete } from "./registrationValidation.js"
 
+function isoDateYearsAgo(years) {
+  const d = new Date()
+  d.setFullYear(d.getFullYear() - years)
+  return d.toISOString().slice(0, 10)
+}
+
 function completeValues(overrides = {}) {
   return {
     ...emptyProfileFields(),
     classCode: "3ème",
     gender: "F",
-    birthYear: "2012",
+    birthDate: isoDateYearsAgo(14),
     isCandidatLibre: false,
     schoolName: "École Test",
-    region: "Centre",
     ...overrides,
   }
 }
@@ -27,11 +32,11 @@ describe("validateProfileFields", () => {
     expect(isProfileFormComplete(completeValues())).toBe(true)
   })
 
-  it("requires classCode, gender and birthYear", () => {
+  it("requires classCode, gender and birthDate", () => {
     const errors = validateProfileFields(emptyProfileFields())
     expect(errors.classCode).toBeTruthy()
     expect(errors.gender).toBeTruthy()
-    expect(errors.birthYear).toBeTruthy()
+    expect(errors.birthDate).toBeTruthy()
   })
 
   it("no longer accepts 'NSP' as a gender value", () => {
@@ -40,9 +45,15 @@ describe("validateProfileFields", () => {
     expect(errors.gender).toBeTruthy()
   })
 
-  it("rejects an out-of-range birth year", () => {
-    expect(validateProfileFields(completeValues({ birthYear: "1900" })).birthYear).toBeTruthy()
-    expect(validateProfileFields(completeValues({ birthYear: "2099" })).birthYear).toBeTruthy()
+  it("rejects an implausible birth date (too young, too old, or in the future)", () => {
+    expect(validateProfileFields(completeValues({ birthDate: isoDateYearsAgo(2) })).birthDate).toBeTruthy()
+    expect(validateProfileFields(completeValues({ birthDate: isoDateYearsAgo(90) })).birthDate).toBeTruthy()
+    expect(validateProfileFields(completeValues({ birthDate: isoDateYearsAgo(-1) })).birthDate).toBeTruthy()
+  })
+
+  it("accepts birth dates at the plausible boundaries (6 and 80 years old)", () => {
+    expect(validateProfileFields(completeValues({ birthDate: isoDateYearsAgo(6) })).birthDate).toBeUndefined()
+    expect(validateProfileFields(completeValues({ birthDate: isoDateYearsAgo(80) })).birthDate).toBeUndefined()
   })
 
   it("requires an explicit choice for isCandidatLibre (null is not a valid answer)", () => {

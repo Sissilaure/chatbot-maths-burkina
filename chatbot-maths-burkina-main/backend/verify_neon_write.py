@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import auth
 import database as db
@@ -74,17 +74,16 @@ def verify_student_with_school() -> bool:
         "username": _unique("eleve"),
         "class_code": "3ème",
         "gender": "F",
-        "birth_year": 2011,
+        "birth_date": date(2011, 6, 15),
         "is_candidat_libre": False,
         "school_name": "Lycée Vérification Neon",
-        "region": "Centre",
         "consent_version": CONSENT_VERSION,
     }
     user = db.create_user(
         sent["username"], auth.hash_password("motdepasse-verif"),
-        class_code=sent["class_code"], gender=sent["gender"], birth_year=sent["birth_year"],
+        class_code=sent["class_code"], gender=sent["gender"], birth_date=sent["birth_date"],
         is_candidat_libre=sent["is_candidat_libre"], school_name=sent["school_name"],
-        region=sent["region"], consent_version=sent["consent_version"],
+        consent_version=sent["consent_version"],
     )
     assert user is not None, "création du compte élève échouée"
     created_user_ids.append(user["id"])
@@ -97,12 +96,11 @@ def verify_student_with_school() -> bool:
            comparator=lambda s, st: bool(st) and st.startswith("CM-"))
     _check(rows, "class_code", sent["class_code"], reread["class_code"])
     _check(rows, "gender", sent["gender"], reread["gender"])
-    _check(rows, "birth_year", sent["birth_year"], reread["birth_year"])
+    _check(rows, "birth_date", sent["birth_date"], reread["birth_date"])
     _check(rows, "is_candidat_libre", sent["is_candidat_libre"], reread["is_candidat_libre"])
     _check(rows, "school_raw", sent["school_name"], reread["school_raw"])
     _check(rows, "school_id", "(résolu)", reread["school_id"],
            comparator=lambda s, st: st is not None)
-    _check(rows, "region", sent["region"], reread["region"])
     _check(rows, "consent_version", sent["consent_version"], reread["consent_version"])
     _check(rows, "consent_at", "(horodaté)", reread["consent_at"],
            comparator=lambda s, st: st is not None)
@@ -117,12 +115,12 @@ def verify_candidat_libre() -> bool:
         "username": _unique("candlibre"),
         "class_code": "Tle",
         "gender": "M",
-        "birth_year": 2007,
+        "birth_date": date(2007, 3, 2),
         "is_candidat_libre": True,
     }
     user = db.create_user(
         sent["username"], auth.hash_password("motdepasse-verif"),
-        class_code=sent["class_code"], gender=sent["gender"], birth_year=sent["birth_year"],
+        class_code=sent["class_code"], gender=sent["gender"], birth_date=sent["birth_date"],
         is_candidat_libre=sent["is_candidat_libre"], school_name=None,
         consent_version=CONSENT_VERSION,
     )

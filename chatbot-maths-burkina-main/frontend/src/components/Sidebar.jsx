@@ -68,27 +68,52 @@ function DifficultyControl({ difficulty, setDifficulty }) {
   )
 }
 
+/** Ligne en lecture seule affichant la classe d'un compte connecté (fixée à app.users.class_code,
+ * voir RAPPORT_MIGRATION.md) — remplace le sélecteur pour lui, un invité gardant le sélecteur
+ * libre. « Changer » ouvre le contrôle de changement de classe de ProfilePanel.jsx (PATCH
+ * /api/profile), pas un simple champ local : changer de classe est une action sur le compte. */
+function ReadOnlyClassRow({ classeNom, onChangeClick }) {
+  return (
+    <div className="flex items-center justify-between rounded-xl border border-base-300/60 bg-base-100 px-3.5 py-2.5 text-sm">
+      <span>
+        <span className="text-base-content/50">Classe : </span>
+        <span className="font-medium text-base-content">{classeNom || "Non renseignée"}</span>
+      </span>
+      <button type="button" onClick={onChangeClick} className="text-xs font-semibold text-primary hover:underline">
+        Changer
+      </button>
+    </div>
+  )
+}
+
 /** Réglages "nus" (sans carte, sans icône, sans titre de section) — voir RAPPORT_MOBILE.md §3 :
  * juste les trois contrôles, pour réduire la densité verticale sur mobile. */
-function MobileSettingsTab({ classes, classCode, setClassCode, chapters, chapitre, setChapitre, difficulty, setDifficulty }) {
+function MobileSettingsTab({ user, classes, classCode, setClassCode, chapters, chapitre, setChapitre, difficulty, setDifficulty, onGoToClassEdit }) {
+  const classeNom = classes.find((c) => c.code === classCode)?.name || classCode
   return (
     <div className="flex flex-col gap-4 p-4">
       <div>
-        <select
-          className="select select-bordered w-full rounded-xl bg-base-100"
-          value={classCode}
-          onChange={(e) => setClassCode(e.target.value)}
-        >
-          <option value="">-- Classe (optionnel) --</option>
-          {classes.map((c) => (
-            <option key={c.code} value={c.code}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-        <p className="mt-1 text-[12px] text-base-content/50">
-          Choisir ta classe et ton chapitre est facultatif — ça aide juste à affiner les réponses.
-        </p>
+        {user ? (
+          <ReadOnlyClassRow classeNom={classeNom} onChangeClick={onGoToClassEdit} />
+        ) : (
+          <>
+            <select
+              className="select select-bordered w-full rounded-xl bg-base-100"
+              value={classCode}
+              onChange={(e) => setClassCode(e.target.value)}
+            >
+              <option value="">-- Classe (optionnel) --</option>
+              {classes.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[12px] text-base-content/50">
+              Choisir ta classe et ton chapitre est facultatif — ça aide juste à affiner les réponses.
+            </p>
+          </>
+        )}
       </div>
 
       <select
@@ -113,7 +138,11 @@ function MobileSettingsTab({ classes, classCode, setClassCode, chapters, chapitr
   )
 }
 
-function MobileHistoryTab({ user, conversations, activeConversationId, onSelectConversation, onDeleteConversation, onNewConversation, profile, onResumeTopic, onReviewStruggle, onDismissStruggle }) {
+function MobileHistoryTab({
+  user, conversations, activeConversationId, onSelectConversation, onDeleteConversation, onNewConversation,
+  profile, onResumeTopic, onReviewStruggle, onDismissStruggle,
+  classes, classCode, classEditOpen, onCloseClassEdit, onClassChanged,
+}) {
   return (
     <div className="flex flex-col gap-4 p-4">
       {user ? (
@@ -128,6 +157,12 @@ function MobileHistoryTab({ user, conversations, activeConversationId, onSelectC
         <p className="text-sm text-base-content/50">Connecte-toi pour garder ton historique d'une fois sur l'autre.</p>
       )}
       <ProfilePanel
+        user={user}
+        classes={classes}
+        classCode={classCode}
+        classEditOpen={classEditOpen}
+        onCloseClassEdit={onCloseClassEdit}
+        onClassChanged={onClassChanged}
         profile={profile}
         onResumeTopic={onResumeTopic}
         onReviewStruggle={onReviewStruggle}
@@ -164,6 +199,10 @@ export default function Sidebar({
   onNewConversation,
   mobileTab: controlledMobileTab,
   onMobileTabChange,
+  classEditOpen,
+  onOpenClassEdit,
+  onCloseClassEdit,
+  onClassChanged,
 }) {
   const isMobile = useIsMobile()
   // Contrôlé par App.jsx quand fourni (voir ChatInput.jsx : les pastilles classe/chapitre
@@ -172,6 +211,13 @@ export default function Sidebar({
   const [localMobileTab, setLocalMobileTab] = useState("reglages")
   const mobileTab = controlledMobileTab ?? localMobileTab
   const setMobileTab = onMobileTabChange ?? setLocalMobileTab
+
+  // Le contrôle de changement de classe vit dans ProfilePanel (onglet Historique) : le lien
+  // « Changer » de la ligne classe en lecture seule (onglet Réglages) doit donc aussi y amener.
+  function goToClassEdit() {
+    setMobileTab("historique")
+    onOpenClassEdit()
+  }
 
   if (isMobile) {
     return (
@@ -198,6 +244,7 @@ export default function Sidebar({
 
           {mobileTab === "reglages" ? (
             <MobileSettingsTab
+              user={user}
               classes={classes}
               classCode={classCode}
               setClassCode={setClassCode}
@@ -206,6 +253,7 @@ export default function Sidebar({
               setChapitre={setChapitre}
               difficulty={difficulty}
               setDifficulty={setDifficulty}
+              onGoToClassEdit={goToClassEdit}
             />
           ) : (
             <MobileHistoryTab
@@ -219,6 +267,11 @@ export default function Sidebar({
               onResumeTopic={onResumeTopic}
               onReviewStruggle={onReviewStruggle}
               onDismissStruggle={onDismissStruggle}
+              classes={classes}
+              classCode={classCode}
+              classEditOpen={classEditOpen}
+              onCloseClassEdit={onCloseClassEdit}
+              onClassChanged={onClassChanged}
             />
           )}
         </Card>
@@ -236,7 +289,11 @@ export default function Sidebar({
     <aside className="flex w-full shrink-0 flex-col gap-4 lg:w-80">
       <Card className="flex items-start gap-2 border-primary/20 bg-primary/5 p-3.5 text-sm text-base-content/70">
         <Info size={15} className="mt-0.5 shrink-0 text-primary" />
-        <span>Choisir ta classe et ton chapitre est <strong>facultatif</strong> — ça aide juste à affiner les réponses.</span>
+        {user ? (
+          <span>Ta classe est celle de ton compte. Choisir un chapitre reste <strong>facultatif</strong> — ça aide juste à affiner les réponses.</span>
+        ) : (
+          <span>Choisir ta classe et ton chapitre est <strong>facultatif</strong> — ça aide juste à affiner les réponses.</span>
+        )}
       </Card>
 
       {user && (
@@ -250,6 +307,12 @@ export default function Sidebar({
       )}
 
       <ProfilePanel
+        user={user}
+        classes={classes}
+        classCode={classCode}
+        classEditOpen={classEditOpen}
+        onCloseClassEdit={onCloseClassEdit}
+        onClassChanged={onClassChanged}
         profile={profile}
         onResumeTopic={onResumeTopic}
         onReviewStruggle={onReviewStruggle}
@@ -260,18 +323,25 @@ export default function Sidebar({
         <SectionLabel icon={GraduationCap} color="bg-primary/15 text-primary">
           Ma classe
         </SectionLabel>
-        <select
-          className="select select-bordered w-full rounded-xl bg-base-100"
-          value={classCode}
-          onChange={(e) => setClassCode(e.target.value)}
-        >
-          <option value="">-- Optionnel --</option>
-          {classes.map((c) => (
-            <option key={c.code} value={c.code}>
-              {c.name}
-            </option>
-          ))}
-        </select>
+        {user ? (
+          <ReadOnlyClassRow
+            classeNom={classes.find((c) => c.code === classCode)?.name || classCode}
+            onChangeClick={onOpenClassEdit}
+          />
+        ) : (
+          <select
+            className="select select-bordered w-full rounded-xl bg-base-100"
+            value={classCode}
+            onChange={(e) => setClassCode(e.target.value)}
+          >
+            <option value="">-- Optionnel --</option>
+            {classes.map((c) => (
+              <option key={c.code} value={c.code}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        )}
       </Card>
 
       <Card className="p-4">

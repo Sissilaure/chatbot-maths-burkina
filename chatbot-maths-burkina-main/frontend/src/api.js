@@ -302,8 +302,8 @@ export async function getSummary(history, classCode, chapter, conversationId = n
 
 /**
  * Crée un compte. `profile` regroupe les champs de fiche désormais obligatoires à l'inscription
- * (voir RegisterRequest côté backend) : class_code, gender ('F'/'M'), birth_year,
- * is_candidat_libre, school_name (ignoré/absent si is_candidat_libre), region (facultatif).
+ * (voir RegisterRequest côté backend) : class_code, gender ('F'/'M'), birth_date ("YYYY-MM-DD"),
+ * is_candidat_libre, school_name (ignoré/absent si is_candidat_libre).
  * Le compte n'est créé qu'à cet appel — jamais avant, voir AuthGate.jsx (envoi unique en fin
  * de formulaire, pas de compte partiel créé si l'élève abandonne en cours de route).
  */
@@ -316,10 +316,9 @@ export async function registerAccount(username, password, profile) {
       password,
       class_code: profile.classCode,
       gender: profile.gender,
-      birth_year: profile.birthYear,
+      birth_date: profile.birthDate,
       is_candidat_libre: profile.isCandidatLibre,
       school_name: profile.isCandidatLibre ? null : profile.schoolName,
-      region: profile.region || null,
       consent_accepted: true,
     }),
   })

@@ -4,6 +4,7 @@ import { Bot, GraduationCap, Copy, Check, RefreshCcw, BookOpen, ListChecks, Baby
 import Button from "./ui/Button"
 import Card from "./ui/Card"
 import MathContent from "./MathContent"
+import { formatMessageTime } from "../lib/dateFormat"
 
 const KIND_META = {
   summary: { label: "Résumé", icon: ListChecks, colorClass: "text-primary" },
@@ -106,6 +107,10 @@ export default function MessageBubble({ message, onRegenerate, regenerating, onS
             </details>
           )}
         </Card>
+
+        {message.createdAt && (
+          <span className="px-1 text-[11px] text-base-content/40">{formatMessageTime(message.createdAt)}</span>
+        )}
 
         {!isUser && message.text && (
           <div className="flex items-center gap-1 px-1">

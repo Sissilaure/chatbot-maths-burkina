@@ -1,8 +1,8 @@
 import { MessageCircleQuestion, PencilRuler, Baby } from "lucide-react"
 
-/** Les 3 cartes explicatives "comment ça marche" — utilisées par WelcomeCard (bureau, affichées
- * en ligne) et par HowItWorksSheet (mobile, dans la feuille modale) : une seule source pour ne
- * pas laisser les deux versions diverger. */
+/** Les 3 cartes explicatives "comment ça marche", affichées dans AboutPanel (voir
+ * RAPPORT_MOBILE.md/RAPPORT_MIGRATION.md) — extrait ici pour rester la seule source si un autre
+ * composant en a un jour besoin. */
 export const ONBOARDING_STEPS = [
   {
     icon: MessageCircleQuestion,
