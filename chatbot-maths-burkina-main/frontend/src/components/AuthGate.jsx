@@ -2,7 +2,7 @@ import React, { useState } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import {
   Sigma, User, Lock, LogIn, UserPlus, ArrowRight, ArrowLeft, AlertCircle,
-  MessageCircleQuestion, Target, TrendingUp, Check,
+  Check,
 } from "lucide-react"
 import Button from "./ui/Button"
 import ConsentNotice from "./ConsentNotice.jsx"
@@ -14,12 +14,6 @@ import { emptyProfileFields, validateProfileFields } from "../lib/registrationVa
 const TABS = [
   { id: "login", label: "Connexion", icon: LogIn },
   { id: "register", label: "Inscription", icon: UserPlus },
-]
-
-const FEATURES = [
-  { icon: MessageCircleQuestion, text: "Pose tes questions à tout moment" },
-  { icon: Target, text: "Des conseils taillés pour tes lacunes" },
-  { icon: TrendingUp, text: "Progresse à ton rythme, du 6ème à la Terminale" },
 ]
 
 const MIN_PASSWORD_LENGTH = 8
@@ -200,7 +194,7 @@ export default function AuthGate({ onAuthenticated, onContinueAsGuest }) {
   return (
     <div className="grid min-h-screen bg-base-100 text-base-content lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)]">
       {/* Panneau de marque — masqué sur mobile, où le contenu ci-dessous suffit */}
-      <div className="relative hidden overflow-hidden bg-gradient-to-br from-[#062b28] via-primary to-secondary lg:flex lg:flex-col lg:justify-between">
+      <div className="relative hidden overflow-hidden bg-gradient-to-br from-[#062b28] via-primary to-secondary lg:flex lg:flex-col">
         <FloatingGlyphs />
 
         <div className="relative z-10 p-10">
@@ -212,44 +206,16 @@ export default function AuthGate({ onAuthenticated, onContinueAsGuest }) {
           </div>
         </div>
 
-        <div className="relative z-10 p-10 pt-0">
+        <div className="relative z-10 flex flex-1 items-center px-10">
           <motion.p
-            initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
-            className="text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-accent"
-          >
-            Ton prof infatigable
-          </motion.p>
-          <motion.p
-            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.08 }}
-            className="font-heading mt-2 max-w-sm text-[2rem] font-extrabold leading-[1.1] text-white"
+            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
+            className="font-heading max-w-sm text-[2.75rem] font-extrabold leading-[1.1] text-white"
           >
             Progresse en maths,{" "}
             <span className="bg-gradient-to-r from-accent via-white to-secondary bg-clip-text italic text-transparent">
               à ton rythme.
             </span>
           </motion.p>
-          <motion.p
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5, delay: 0.2 }}
-            className="mt-3 max-w-xs text-[0.95rem] font-light leading-relaxed text-white/70"
-          >
-            Un compte pour garder ton historique et recevoir des conseils qui te ressemblent.
-          </motion.p>
-
-          <div className="mt-7 flex flex-col gap-3">
-            {FEATURES.map((f, i) => (
-              <motion.div
-                key={f.text}
-                initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.4, delay: 0.3 + i * 0.1 }}
-                className="flex items-center gap-3"
-              >
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10 text-accent">
-                  <f.icon size={15} />
-                </span>
-                <span className="text-sm text-white/80">{f.text}</span>
-              </motion.div>
-            ))}
-          </div>
         </div>
       </div>
 

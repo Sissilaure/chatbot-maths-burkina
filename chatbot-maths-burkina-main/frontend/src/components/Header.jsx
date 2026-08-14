@@ -3,7 +3,7 @@ import { motion } from "framer-motion"
 import { Sigma, Moon, Sun, LogIn, LogOut, UserCircle2 } from "lucide-react"
 import Button from "./ui/Button"
 
-export default function Header({ theme, onToggleTheme, user, onLoginClick, onLogout }) {
+export default function Header({ theme, onToggleTheme, user, onLoginClick, onLogout, onEditProfile }) {
   return (
     <motion.header
       initial={{ opacity: 0, y: -12 }}
@@ -32,10 +32,15 @@ export default function Header({ theme, onToggleTheme, user, onLoginClick, onLog
       <div className="flex items-center gap-1 md:gap-2">
         {user ? (
           <div className="flex items-center gap-1.5">
-            <span className="hidden items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary sm:flex">
+            <button
+              type="button"
+              onClick={onEditProfile}
+              title="Modifier mon profil"
+              className="hidden items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary transition-colors hover:bg-primary/20 sm:flex"
+            >
               <UserCircle2 size={15} />
               {user}
-            </span>
+            </button>
             {/* min-h/min-w 44px : cible tactile minimale sur mobile (voir RAPPORT_MOBILE.md,
                 contraintes générales) — Button::size="icon" seul (p-2) n'atteint pas 44px. */}
             <Button

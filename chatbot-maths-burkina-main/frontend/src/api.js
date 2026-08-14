@@ -364,9 +364,17 @@ export async function searchSchools(query) {
 
 // ---- Complétion de profil (comptes migrés) ----
 
+/** Valeurs actuelles de la fiche (classe/genre/date de naissance/candidat libre/établissement),
+ * pour pré-remplir le formulaire de modification de profil — voir EditProfileSheet.jsx. */
+export async function getProfileFields(token) {
+  const res = await fetch(`${API_BASE}/api/profile/fields`, { headers: authHeaders(token) })
+  return handleJson(res, "Erreur chargement du profil")
+}
+
 /** Complète/corrige la fiche d'un compte déjà existant — utilisée par ProfileCompletionGate.jsx
- * (comptes migrés) et par ProfilePanel pour une correction ponctuelle. `fields` ne contient que
- * les clés à modifier (mise à jour partielle, voir PATCH /api/profile côté serveur). */
+ * (comptes migrés), ProfilePanel (changement de classe) et EditProfileSheet.jsx (correction
+ * complète). `fields` ne contient que les clés à modifier (mise à jour partielle, voir PATCH
+ * /api/profile côté serveur). */
 export async function updateProfile(token, fields) {
   const res = await fetch(`${API_BASE}/api/profile`, {
     method: "PATCH",

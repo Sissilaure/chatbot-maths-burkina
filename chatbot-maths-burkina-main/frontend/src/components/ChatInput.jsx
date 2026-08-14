@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react"
 import {
   SendHorizontal, PencilRuler, BookOpen, ListChecks, ClipboardCheck, Camera, ImageOff,
-  MoreHorizontal, FileDown, FileText, GraduationCap,
+  MoreHorizontal, FileDown, FileText,
 } from "lucide-react"
 import Button from "./ui/Button"
 import ExportMenu from "./ExportMenu"
@@ -53,32 +53,7 @@ function SheetAction({ icon: Icon, label, hint, onClick, disabled }) {
   )
 }
 
-/** Pastille compacte classe/chapitre au-dessus du champ de saisie (mobile) : ouvre l'onglet
- * Réglages de la sidebar au clic, voir RAPPORT_MOBILE.md §5. `interactive=false` (pastille
- * classe d'un compte connecté, dont la classe est fixée au compte, voir RAPPORT_MIGRATION.md) la
- * rend purement informative — plus rien à régler dessus, seul « Changer » depuis le profil le peut. */
-const PILL_CLASSNAME =
-  "flex min-h-[32px] items-center gap-1 rounded-full border border-base-300/70 bg-base-100 px-2.5 py-1 text-xs font-medium text-base-content/70"
-
-function InfoPill({ text, onClick, interactive = true }) {
-  if (!interactive) {
-    return (
-      <span className={PILL_CLASSNAME}>
-        <GraduationCap size={11} />
-        <span className="max-w-[38vw] truncate">{text}</span>
-      </span>
-    )
-  }
-  return (
-    <button type="button" onClick={onClick} className={PILL_CLASSNAME}>
-      <GraduationCap size={11} />
-      <span className="max-w-[38vw] truncate">{text}</span>
-    </button>
-  )
-}
-
 export default function ChatInput({
-  user,
   question,
   setQuestion,
   onSend,
@@ -95,9 +70,6 @@ export default function ChatInput({
   loading,
   exportingSession,
   photoLoading,
-  classeNom,
-  chapitre,
-  onOpenSettings,
 }) {
   const photoInputRef = useRef(null)
   const isMobile = useIsMobile()
@@ -144,15 +116,6 @@ export default function ChatInput({
           >
             <ImageOff size={13} /> Changer de sujet
           </button>
-        </div>
-      )}
-
-      {/* Pastilles classe/chapitre : uniquement sur mobile, où la sidebar (et donc ce contexte)
-          n'est pas visible en permanence — voir RAPPORT_MOBILE.md §5. */}
-      {isMobile && (classeNom || chapitre) && (
-        <div className="mb-2 flex items-center gap-1.5">
-          <InfoPill text={classeNom || "Classe"} onClick={onOpenSettings} interactive={!user} />
-          {chapitre && <InfoPill text={chapitre} onClick={onOpenSettings} />}
         </div>
       )}
 
@@ -263,9 +226,6 @@ export default function ChatInput({
           {photoLoading ? "Analyse en cours…" : "Photo / fichier d'exercice"}
         </Button>
         <ExportMenu onExport={onDownloadSession} exporting={exportingSession} label="PDF / Word" align="left" />
-        <span className="ml-auto hidden text-sm text-base-content/50 lg:inline">
-          Entrée pour envoyer · Maj+Entrée pour une nouvelle ligne
-        </span>
       </div>
 
       <BottomSheet open={sheetOpen} onClose={() => setSheetOpen(false)} title="Plus d'actions">

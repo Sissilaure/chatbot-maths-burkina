@@ -1,6 +1,6 @@
 import React, { useState } from "react"
 import { motion } from "framer-motion"
-import { GraduationCap, BookOpen, RotateCcw, Gauge, Info, Star, SlidersHorizontal, History } from "lucide-react"
+import { GraduationCap, BookOpen, RotateCcw, Gauge, Info, Star, SlidersHorizontal, History, UserRound } from "lucide-react"
 import Card from "./ui/Card"
 import Button from "./ui/Button"
 import ProfilePanel from "./ProfilePanel"
@@ -141,7 +141,7 @@ function MobileSettingsTab({ user, classes, classCode, setClassCode, chapters, c
 function MobileHistoryTab({
   user, conversations, activeConversationId, onSelectConversation, onDeleteConversation, onNewConversation,
   profile, onResumeTopic, onReviewStruggle, onDismissStruggle,
-  classes, classCode, classEditOpen, onCloseClassEdit, onClassChanged,
+  classes, classCode, classEditOpen, onCloseClassEdit, onClassChanged, onEditProfile,
 }) {
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -168,6 +168,11 @@ function MobileHistoryTab({
         onReviewStruggle={onReviewStruggle}
         onDismissStruggle={onDismissStruggle}
       />
+      {user && (
+        <Button variant="outline" size="md" onClick={onEditProfile} className="min-h-[44px] w-full">
+          <UserRound size={15} /> Modifier mon profil
+        </Button>
+      )}
     </div>
   )
 }
@@ -203,11 +208,11 @@ export default function Sidebar({
   onOpenClassEdit,
   onCloseClassEdit,
   onClassChanged,
+  onEditProfile,
 }) {
   const isMobile = useIsMobile()
-  // Contrôlé par App.jsx quand fourni (voir ChatInput.jsx : les pastilles classe/chapitre
-  // forcent l'onglet "Réglages" même si la sidebar est déjà ouverte sur "Historique") ; sinon
-  // état local, pour rester utilisable isolément (tests, Storybook...).
+  // Contrôlé par App.jsx quand fourni ; sinon état local, pour rester utilisable isolément
+  // (tests, Storybook...).
   const [localMobileTab, setLocalMobileTab] = useState("reglages")
   const mobileTab = controlledMobileTab ?? localMobileTab
   const setMobileTab = onMobileTabChange ?? setLocalMobileTab
@@ -272,6 +277,7 @@ export default function Sidebar({
               classEditOpen={classEditOpen}
               onCloseClassEdit={onCloseClassEdit}
               onClassChanged={onClassChanged}
+              onEditProfile={onEditProfile}
             />
           )}
         </Card>
@@ -287,14 +293,12 @@ export default function Sidebar({
 
   return (
     <aside className="flex w-full shrink-0 flex-col gap-4 lg:w-80">
-      <Card className="flex items-start gap-2 border-primary/20 bg-primary/5 p-3.5 text-sm text-base-content/70">
-        <Info size={15} className="mt-0.5 shrink-0 text-primary" />
-        {user ? (
-          <span>Ta classe est celle de ton compte. Choisir un chapitre reste <strong>facultatif</strong> — ça aide juste à affiner les réponses.</span>
-        ) : (
+      {!user && (
+        <Card className="flex items-start gap-2 border-primary/20 bg-primary/5 p-3.5 text-sm text-base-content/70">
+          <Info size={15} className="mt-0.5 shrink-0 text-primary" />
           <span>Choisir ta classe et ton chapitre est <strong>facultatif</strong> — ça aide juste à affiner les réponses.</span>
-        )}
-      </Card>
+        </Card>
+      )}
 
       {user && (
         <ConversationList
@@ -306,29 +310,11 @@ export default function Sidebar({
         />
       )}
 
-      <ProfilePanel
-        user={user}
-        classes={classes}
-        classCode={classCode}
-        classEditOpen={classEditOpen}
-        onCloseClassEdit={onCloseClassEdit}
-        onClassChanged={onClassChanged}
-        profile={profile}
-        onResumeTopic={onResumeTopic}
-        onReviewStruggle={onReviewStruggle}
-        onDismissStruggle={onDismissStruggle}
-      />
-
-      <Card className="p-4">
-        <SectionLabel icon={GraduationCap} color="bg-primary/15 text-primary">
-          Ma classe
-        </SectionLabel>
-        {user ? (
-          <ReadOnlyClassRow
-            classeNom={classes.find((c) => c.code === classCode)?.name || classCode}
-            onChangeClick={onOpenClassEdit}
-          />
-        ) : (
+      {!user && (
+        <Card className="p-4">
+          <SectionLabel icon={GraduationCap} color="bg-primary/15 text-primary">
+            Ma classe
+          </SectionLabel>
           <select
             className="select select-bordered w-full rounded-xl bg-base-100"
             value={classCode}
@@ -341,8 +327,8 @@ export default function Sidebar({
               </option>
             ))}
           </select>
-        )}
-      </Card>
+        </Card>
+      )}
 
       <Card className="p-4">
         <SectionLabel icon={BookOpen} color="bg-secondary/15 text-secondary">

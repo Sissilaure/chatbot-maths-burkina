@@ -880,6 +880,21 @@ def search_schools(request: Request, q: str = ""):
 
 # ---- Profil (complétion différée de la fiche) ----
 
+@app.get("/api/profile/fields")
+def get_profile_fields(user=Depends(auth.get_current_user)):
+    """Valeurs actuelles de la fiche (classe/genre/date de naissance/candidat libre/établissement),
+    pour pré-remplir le formulaire de modification de profil — voir PATCH /api/profile pour
+    l'écriture. `user` vient déjà de database.get_user_by_id (voir auth.get_current_user) : pas
+    de requête supplémentaire nécessaire ici."""
+    return {
+        "class_code": user.get("class_code"),
+        "gender": user.get("gender"),
+        "birth_date": user.get("birth_date"),
+        "is_candidat_libre": user.get("is_candidat_libre"),
+        "school_raw": user.get("school_raw"),
+    }
+
+
 @app.patch("/api/profile")
 def update_profile(payload: ProfileUpdateRequest, user=Depends(auth.get_current_user)):
     if payload.class_code and payload.class_code not in get_classes():

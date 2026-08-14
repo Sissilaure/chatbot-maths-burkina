@@ -32,6 +32,7 @@ import ChatInput from "./components/ChatInput.jsx"
 import TypingIndicator from "./components/TypingIndicator.jsx"
 import WelcomeCard from "./components/WelcomeCard.jsx"
 import AboutPanel from "./components/AboutPanel.jsx"
+import EditProfileSheet from "./components/EditProfileSheet.jsx"
 import BottomSheet from "./components/ui/BottomSheet.jsx"
 import BackgroundBlobs from "./components/BackgroundBlobs.jsx"
 import AuthGate from "./components/AuthGate.jsx"
@@ -97,6 +98,15 @@ function DateSeparator({ iso }) {
 export default function App() {
   const isMobile = useIsMobile()
   const [aboutOpen, setAboutOpen] = useState(false)
+  const [editProfileOpen, setEditProfileOpen] = useState(false)
+  // Ferme la feuille Réglages/Historique (mobile) avant d'ouvrir celle du profil : sinon les deux
+  // BottomSheet s'empilent visuellement (celle du profil ouverte par-dessus, celle du dessous
+  // toujours visible/interactive derrière). Inoffensif sur bureau (mobileSidebarOpen y est déjà
+  // toujours faux, la sidebar bureau n'étant pas une feuille modale).
+  function openEditProfile() {
+    setMobileSidebarOpen(false)
+    setEditProfileOpen(true)
+  }
   const [theme, setTheme] = useState(() => localStorage.getItem("chatmaths-theme") || "chatmaths-light")
   // Bureau uniquement : ouvert par défaut, préférence mémorisée (voir l'effet de sauvegarde
   // plus bas). Sur mobile, Réglages/Historique ne sont plus jamais affichés en ligne — voir
@@ -407,7 +417,15 @@ export default function App() {
 
   async function openConversation(id) {
     const token = getToken()
+    // Capturé AVANT l'attente réseau : si un envoi de message a entre-temps rendu une autre
+    // conversation active (voir ensureConversation) — typiquement un élève qui pose sa question
+    // très vite après la connexion, avant que ce chargement initial (déclenché par loadUserData)
+    // n'ait eu le temps de répondre — ce résultat est périmé. L'appliquer quand même écraserait
+    // silencieusement le fil en cours (question et/ou réponse qui viennent d'être ajoutées),
+    // symptôme observé : messages qui "disparaissent" juste après l'envoi.
+    const idBeforeFetch = activeConversationIdRef.current
     const conv = await getConversation(token, id)
+    if (activeConversationIdRef.current !== idBeforeFetch) return
     // Les messages renvoyés par le serveur (role/kind/content/payload, voir database.get_messages)
     // ont une forme différente de celle attendue par l'interface (type/text/data/sources, voir
     // MessageBubble.jsx/ExerciseCard.jsx/RemediationQuiz.jsx) — sans cette conversion, rouvrir une
@@ -695,13 +713,6 @@ export default function App() {
     setSimplifyingIndex(null)
   }
 
-  /** Ouvre la feuille Réglages/Historique sur l'onglet "Réglages" (mobile) — utilisé par les
-   * pastilles classe/chapitre de ChatInput, voir RAPPORT_MOBILE.md §5. */
-  function handleOpenSettings() {
-    setSidebarMobileTab("reglages")
-    setMobileSidebarOpen(true)
-  }
-
   /** Génère UN exercice (pas cinq d'un coup, voir RAPPORT_MOBILE.md §7 : cinq écrans de
    * défilement à la fois était l'un des pires contributeurs à la densité mobile). "Exercice
    * suivant" sous la carte rappelle cette même fonction. Le dédoublonnage ("ne pas reproposer un
@@ -973,6 +984,7 @@ export default function App() {
         user={user}
         onLoginClick={handleLoginClick}
         onLogout={handleLogout}
+        onEditProfile={openEditProfile}
       />
 
       {!serverOnline && (
@@ -1034,6 +1046,7 @@ export default function App() {
                   onOpenClassEdit={() => setClassEditOpen(true)}
                   onCloseClassEdit={() => setClassEditOpen(false)}
                   onClassChanged={handleClassChanged}
+                  onEditProfile={openEditProfile}
                 />
               </motion.div>
             )}
@@ -1115,7 +1128,6 @@ export default function App() {
           </div>
 
           <ChatInput
-            user={user}
             question={question}
             setQuestion={setQuestion}
             onSend={handleSend}
@@ -1132,14 +1144,12 @@ export default function App() {
             loading={loading || streaming}
             exportingSession={exportingSession}
             photoLoading={photoLoading}
-            classeNom={classeNom}
-            chapitre={chapitre}
-            onOpenSettings={handleOpenSettings}
           />
         </main>
       </div>
 
-      <footer className="px-4 pb-4 text-center text-xs text-base-content/40">
+      <footer className="flex flex-col items-center gap-1.5 px-4 pb-4 text-center text-xs text-base-content/40">
+        <img src="/hakili-lab-logo.jpg" alt="Hakili Lab" className="h-20 w-20 object-contain" />
         Prof Amira, ton prof infatigable · Programme officiel du Burkina Faso (6ème à Terminale)
         <br />
         Un produit Hakili Lab ·{" "}
@@ -1153,6 +1163,13 @@ export default function App() {
       </footer>
 
       <AboutPanel open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      {user && (
+        <EditProfileSheet
+          open={editProfileOpen}
+          onClose={() => setEditProfileOpen(false)}
+          token={getToken()}
+        />
+      )}
 
       {/* Réglages/Historique mobile : voir le commentaire sur mobileSidebarOpen plus haut. Sidebar
           détecte elle-même le mode mobile et affiche ses 2 onglets nus (pas de colonnes bureau)
@@ -1192,6 +1209,7 @@ export default function App() {
             onOpenClassEdit={() => setClassEditOpen(true)}
             onCloseClassEdit={() => setClassEditOpen(false)}
             onClassChanged={handleClassChanged}
+            onEditProfile={openEditProfile}
           />
         </BottomSheet>
       )}
