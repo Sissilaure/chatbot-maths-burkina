@@ -69,6 +69,12 @@ def get_pool() -> ConnectionPool:
             max_size=getattr(config, "DB_POOL_MAX", 8),
             timeout=30,
             max_idle=300,
+            # Neon met le calcul en veille après une période d'inactivité : sans ce contrôle, le
+            # pool distribue une connexion déjà morte côté serveur (le client ne le découvre qu'à
+            # la prochaine requête, avec `psycopg.OperationalError: SSL connection has been closed
+            # unexpectedly`). check_connection teste la connexion avant de la remettre en
+            # circulation et en ouvre une neuve si besoin — un aller-retour réseau négligeable.
+            check=ConnectionPool.check_connection,
             kwargs={"row_factory": dict_row},
             open=True,
         )

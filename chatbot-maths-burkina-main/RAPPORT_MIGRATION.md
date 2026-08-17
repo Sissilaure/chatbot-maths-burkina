@@ -312,6 +312,20 @@ retomber sur une valeur par défaut silencieuse.
   premier message d'une conversation.
 - **404 plutôt que 403** pour un accès croisé entre élèves sur une conversation — choix délibéré :
   ne confirme même pas l'existence de la ressource à quelqu'un qui n'en est pas propriétaire.
+- **Neon met le calcul en veille après une période d'inactivité** : les connexions déjà ouvertes
+  dans le pool `psycopg_pool` deviennent invalides sans préavis (`psycopg.OperationalError: SSL
+  connection has been closed unexpectedly`), et le pool les redistribuait quand même avant ce
+  correctif. Symptôme trompeur observé en local : la panne se manifestait dans
+  `auth.get_current_user` (via `database.get_user_by_id`), qui la laissait remonter telle quelle
+  — en production, un élève aurait vu ça comme une déconnexion aléatoire malgré un token valide.
+  Deux garde-fous ajoutés : `database.get_pool` vérifie maintenant chaque connexion avant de la
+  redistribuer (`check=ConnectionPool.check_connection`, réouverture automatique si elle est
+  morte) ; et si une panne survient malgré tout pendant une requête déjà en vol,
+  `auth.get_current_user` la traduit en 503 explicite (jamais en 401) tandis que
+  `auth.get_current_user_optional` dégrade silencieusement vers "invité" plutôt que de faire
+  échouer les routes ouvertes qui n'ont pas besoin d'un compte. Testé dans
+  `test_main_api.py::test_dead_db_connection_returns_503_not_401` et
+  `::test_dead_db_connection_degrades_to_guest_on_optional_auth` (connexion morte simulée par mock).
 
 ## 11. Ce que je n'ai PAS fait
 

@@ -10,6 +10,7 @@ de ce fichier est donc lent (10-20s), les suivants réutilisent la même instanc
 """
 from datetime import date
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
@@ -553,3 +554,45 @@ def test_exercise_photo_without_history_defaults_to_empty_list(monkeypatch):
     )
     assert res.status_code == 200
     assert captured["history"] == []
+
+
+def test_dead_db_connection_returns_503_not_401(unique_username, monkeypatch):
+    """Réveil Neon (voir database.get_pool, check_connection) : une connexion morte doit se
+    traduire par un 503 explicite sur les routes à authentification stricte, jamais par un 401
+    (qui renverrait à tort l'élève à l'écran de connexion pour un token qui est en réalité
+    valide — voir RAPPORT_MIGRATION.md, section points d'attention)."""
+    token = _register(unique_username).json()["token"]
+
+    def broken_get_user_by_id(user_id):
+        raise psycopg.OperationalError(
+            "consuming input failed: SSL connection has been closed unexpectedly"
+        )
+
+    monkeypatch.setattr(main.database, "get_user_by_id", broken_get_user_by_id)
+
+    res = client.get("/api/conversations", headers=_auth_headers(token))
+    assert res.status_code == 503
+    assert res.status_code != 401
+
+
+def test_dead_db_connection_degrades_to_guest_on_optional_auth(unique_username, monkeypatch):
+    """Les routes ouvertes aux invités (voir auth.get_current_user_optional) n'ont pas besoin
+    d'un compte pour fonctionner : une panne base pendant la résolution de l'utilisateur ne doit
+    pas les faire échouer, seulement les traiter comme un invité."""
+    token = _register(unique_username).json()["token"]
+
+    def broken_get_user_by_id(user_id):
+        raise psycopg.OperationalError("consuming input failed: SSL connection has been closed unexpectedly")
+
+    monkeypatch.setattr(main.database, "get_user_by_id", broken_get_user_by_id)
+    monkeypatch.setattr(
+        main.rag_system, "generate_response",
+        lambda *a, **k: {"answer": "ok", "sources": [], "from_rag": False},
+    )
+
+    res = client.post(
+        "/api/chat",
+        json={"question": "test", "class_level": "", "chapter": "", "history": []},
+        headers=_auth_headers(token),
+    )
+    assert res.status_code == 200

@@ -1,16 +1,20 @@
 """Authentification des comptes élèves : hash de mot de passe (bcrypt) et
 tokens de connexion (JWT bearer, pas de session serveur)."""
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import bcrypt
 import jwt
+import psycopg
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from config import config
 import database
+
+logger = logging.getLogger(__name__)
 
 JWT_ALGORITHM = "HS256"
 JWT_SECRET_FILE = Path(config.DB_PATH).parent / ".jwt_secret"
@@ -81,7 +85,20 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_securi
     # payload["sub"] est un UUID en chaîne (voir create_token) : les tokens émis avant la
     # migration Postgres (sub = entier SQLite) ne correspondront plus à aucun utilisateur et
     # échoueront proprement ici avec 401, forçant une reconnexion.
-    user = database.get_user_by_id(payload["sub"])
+    try:
+        user = database.get_user_by_id(payload["sub"])
+    except psycopg.OperationalError as exc:
+        # Neon met le calcul en veille après une période d'inactivité : une connexion morte peut
+        # remonter jusqu'ici malgré le contrôle du pool (voir database.get_pool, check_connection)
+        # — ex: la veille survient pendant que la requête est déjà en vol. Sans ce garde-fou,
+        # l'exception se propageait telle quelle et l'élève se retrouvait renvoyé à l'écran de
+        # connexion pour une panne base qui n'a rien à voir avec son token : trompeur en
+        # production (« ça me déconnecte tout le temps », alors que le token est valide).
+        logger.error("Base de données indisponible pendant l'authentification: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporairement indisponible, réessaie dans un instant.",
+        ) from exc
     if not user:
         raise HTTPException(status_code=401, detail="Utilisateur introuvable")
     return user
@@ -93,14 +110,24 @@ def get_current_user_optional(credentials: HTTPAuthorizationCredentials = Depend
     persistent l'échange côté serveur quand l'appelant EST connecté (voir main.py,
     _persist_exchange_best_effort). Retourne None plutôt que de lever 401 si le token est absent,
     invalide ou expiré — dans ce dernier cas, la requête se comporte comme un invité plutôt que
-    d'échouer."""
+    d'échouer. Contrairement à get_current_user (authentification stricte, voir plus haut) : une
+    base indisponible (réveil Neon, voir database.get_pool) dégrade ici aussi vers "invité"
+    plutôt que de lever 503 — ces routes doivent rester utilisables par un élève sans compte même
+    pendant une panne base, elles n'ont justement pas besoin d'un compte pour fonctionner."""
     if not credentials:
         return None
     try:
         payload = jwt.decode(credentials.credentials, _get_jwt_secret(), algorithms=[JWT_ALGORITHM])
     except jwt.PyJWTError:
         return None
-    return database.get_user_by_id(payload["sub"])
+    try:
+        return database.get_user_by_id(payload["sub"])
+    except psycopg.OperationalError as exc:
+        logger.warning(
+            "Base de données indisponible pendant la résolution optionnelle de l'utilisateur, "
+            "requête traitée comme invité: %s", exc,
+        )
+        return None
 
 
 def require_decideur(user=Depends(get_current_user)):
