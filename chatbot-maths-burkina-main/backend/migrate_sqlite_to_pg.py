@@ -127,9 +127,19 @@ def migrate(sqlite_path: Path, dry_run: bool = False) -> None:
             if dry_run:
                 continue
 
-            # L'ancien schéma utilise probablement "role" ou "sender"
-            raw_role = row["role"] if "role" in mcols else row["sender"]
+            # Le schéma réellement déployé (voir main.py historique, avant la migration Postgres)
+            # utilise "type"/"text", pas "role"/"content"/"payload" — colonnes que ce script
+            # supposait à tort ("role" ou "sender" n'ont jamais existé), d'où le mapping explicite
+            # ci-dessous plutôt qu'une simple détection de colonne.
+            if "role" in mcols:
+                raw_role = row["role"]
+            elif "sender" in mcols:
+                raw_role = row["sender"]
+            else:
+                raw_role = row["type"]
             role = "user" if str(raw_role).lower() in ("user", "eleve", "human") else "assistant"
+
+            content = row["content"] if "content" in mcols else row["text"]
 
             payload = None
             if "payload" in mcols and row["payload"]:
@@ -137,13 +147,28 @@ def migrate(sqlite_path: Path, dry_run: bool = False) -> None:
                     payload = json.loads(row["payload"])
                 except (json.JSONDecodeError, TypeError):
                     payload = None
+            elif "sources_json" in mcols or "data_json" in mcols:
+                sources = None
+                data = None
+                try:
+                    sources = json.loads(row["sources_json"]) if row["sources_json"] else None
+                except (json.JSONDecodeError, TypeError):
+                    sources = None
+                try:
+                    data = json.loads(row["data_json"]) if row["data_json"] else None
+                except (json.JSONDecodeError, TypeError):
+                    data = None
+                if data is not None:
+                    payload = data
+                elif sources is not None:
+                    payload = {"sources": sources}
 
             db.add_message(
                 new_conv,
                 id_map[row["user_id"]] if "user_id" in mcols else
                     _owner_of(new_conv),
                 role,
-                row["content"] or "",
+                content or "",
                 kind=row["kind"] if "kind" in mcols and row["kind"] else "chat",
                 payload=payload,
             )
