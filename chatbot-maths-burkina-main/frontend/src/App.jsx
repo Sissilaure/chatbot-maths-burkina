@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "framer-motion"
-import { AlertTriangle, CheckCircle2, XCircle, PanelLeftClose, PanelLeftOpen } from "lucide-react"
+import { AlertTriangle, CheckCircle2, XCircle, PanelLeftClose, PanelLeftOpen, HelpCircle } from "lucide-react"
 import {
   checkHealth,
   getClasses,
@@ -1055,19 +1055,17 @@ export default function App() {
 
         <main className="flex min-h-[70vh] flex-1 flex-col overflow-hidden rounded-2xl border border-base-300/60 bg-base-100/60 shadow-sm">
           <div className="flex items-center justify-between border-b border-base-300/50 px-4 py-2 sm:px-6">
-            <div className="flex min-w-0 items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => (isMobile ? setMobileSidebarOpen(true) : setSidebarOpen((o) => !o))}
-                title={isMobile ? "Réglages et historique" : sidebarOpen ? "Réduire le panneau latéral" : "Afficher le panneau latéral"}
-              >
-                {!isMobile && sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
-              </Button>
-              <p className="truncate text-xs font-medium text-base-content/50">
-                {classeNom ? `${classeNom}${chapitre ? " · " + chapitre : ""}` : "Discussion libre"}
-              </p>
-            </div>
+            {/* Classe/chapitre volontairement absents ici : déjà affichés dans la sidebar ("Ma
+                classe"/"Chapitre") et dans la ligne de contexte de l'accueil (WelcomeCard.jsx) —
+                les répéter dans cette barre était redondant. */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => (isMobile ? setMobileSidebarOpen(true) : setSidebarOpen((o) => !o))}
+              title={isMobile ? "Réglages et historique" : sidebarOpen ? "Réduire le panneau latéral" : "Afficher le panneau latéral"}
+            >
+              {!isMobile && sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+            </Button>
             <ExportMenu
               onExport={handleDownloadSession}
               onExportHistory={user ? handleDownloadFullHistory : undefined}
@@ -1079,12 +1077,15 @@ export default function App() {
           <div ref={chatRef} className="scrollbar-thin flex-1 overflow-y-auto p-4 sm:p-6">
             <div ref={sessionContentRef} className="space-y-4">
               {messages.length === 0 && (
-                <WelcomeCard
-                  personalizedMessage={user ? greetingMessage : null}
-                  chapitre={chapitre}
-                  onSuggestionClick={handleSuggestionClick}
-                  onOpenAbout={() => setAboutOpen(true)}
-                />
+                <div className="flex min-h-[50vh] items-center justify-center py-6 md:min-h-[60vh]">
+                  <WelcomeCard
+                    username={user}
+                    classeNom={classeNom}
+                    chapitre={chapitre}
+                    personalizedMessage={user ? greetingMessage : null}
+                    onSuggestionClick={handleSuggestionClick}
+                  />
+                </div>
               )}
 
               <AnimatePresence initial={false}>
@@ -1145,21 +1146,24 @@ export default function App() {
             exportingSession={exportingSession}
             photoLoading={photoLoading}
           />
+
+          {messages.length === 0 && (
+            <div className="flex justify-center pb-3">
+              <button
+                type="button"
+                onClick={() => setAboutOpen(true)}
+                className="flex items-center gap-1.5 text-sm font-medium text-base-content/50 transition-colors hover:text-primary"
+              >
+                <HelpCircle size={14} />
+                Comment ça marche ?
+              </button>
+            </div>
+          )}
         </main>
       </div>
 
-      <footer className="flex flex-col items-center gap-1.5 px-4 pb-4 text-center text-xs text-base-content/40">
-        <img src="/hakili-lab-logo.jpg" alt="Hakili Lab" className="h-20 w-20 object-contain" />
-        Prof Amira, ton prof infatigable · Programme officiel du Burkina Faso (6ème à Terminale)
-        <br />
-        Un produit Hakili Lab ·{" "}
-        <button
-          type="button"
-          onClick={() => setAboutOpen(true)}
-          className="underline decoration-dotted underline-offset-2 hover:text-primary"
-        >
-          Comment ça marche ?
-        </button>
+      <footer className="px-4 pb-4 text-center text-xs text-base-content/40">
+        Prof Amira · Programme officiel du Burkina Faso (6ème à Terminale) · Un produit Hakili Lab
       </footer>
 
       <AboutPanel open={aboutOpen} onClose={() => setAboutOpen(false)} />
@@ -1168,6 +1172,12 @@ export default function App() {
           open={editProfileOpen}
           onClose={() => setEditProfileOpen(false)}
           token={getToken()}
+          onSaved={(newClassCode) => {
+            if (newClassCode && newClassCode !== classCode) {
+              setClassCode(newClassCode)
+              setChapitre("")
+            }
+          }}
         />
       )}
 

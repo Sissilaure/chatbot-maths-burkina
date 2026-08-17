@@ -5,11 +5,15 @@ import { X } from "lucide-react"
 /**
  * Feuille modale remontant du bas de l'écran (pas un menu déroulant) : cibles plus grandes,
  * geste attendu près du pouce sur mobile — voir RAPPORT_MOBILE.md. Utilisée par le lien « Comment
- * ça marche ? » de WelcomeCard et par le bouton « ⋯ » de ChatInput.
+ * ça marche ? » sous le champ de saisie, le bouton « ⋯ » de ChatInput, et d'autres feuilles
+ * (Réglages/Historique, profil).
  */
 export default function BottomSheet({ open, onClose, title, children }) {
   useEffect(() => {
     if (!open) return
+    // Mémorisé à l'ouverture pour lui rendre le focus à la fermeture (accessibilité clavier) :
+    // sans ça, le focus retombe sur <body> et un utilisateur au clavier perd sa position.
+    const triggerEl = document.activeElement
     function handleKeyDown(e) {
       if (e.key === "Escape") onClose()
     }
@@ -20,6 +24,7 @@ export default function BottomSheet({ open, onClose, title, children }) {
     return () => {
       document.removeEventListener("keydown", handleKeyDown)
       document.body.style.overflow = previousOverflow
+      triggerEl?.focus?.()
     }
   }, [open, onClose])
 
@@ -40,7 +45,7 @@ export default function BottomSheet({ open, onClose, title, children }) {
             role="dialog"
             aria-modal="true"
             aria-label={title}
-            className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col overflow-hidden rounded-t-2xl bg-base-100 shadow-2xl"
+            className="fixed inset-x-0 bottom-0 z-50 flex max-h-[90vh] flex-col overflow-hidden rounded-t-2xl bg-base-100 shadow-2xl"
             initial={{ y: "100%" }}
             animate={{ y: 0 }}
             exit={{ y: "100%" }}

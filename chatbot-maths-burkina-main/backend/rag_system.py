@@ -901,9 +901,9 @@ FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte 
 
         system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
 Un élève nommé {username} vient de se connecter à l'application. Tu as accès à son historique \
-récent. Rédige un court message d'accueil personnalisé (3 à 5 phrases, en Markdown léger) qui :
-- Le salue par son prénom/pseudo de façon chaleureuse.
-- Mentionne de façon concrète 1 ou 2 lacunes réelles tirées de son historique ci-dessous (pas de généralités).
+récent. Rédige un court message d'accueil personnalisé (DEUX PHRASES MAXIMUM, en Markdown léger) qui :
+- Salue-le par son prénom/pseudo de façon chaleureuse et mentionne de façon concrète 1 lacune réelle \
+tirée de son historique ci-dessous (pas de généralités).
 - Termine par UNE suggestion précise et actionnable pour cette session (ex: reprendre tel chapitre, \
 refaire un QCM de remédiation sur telle notion).
 - Si l'historique ne montre AUCUNE lacune claire, félicite-le pour sa progression et propose \

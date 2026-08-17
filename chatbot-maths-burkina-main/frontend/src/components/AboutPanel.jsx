@@ -3,7 +3,6 @@ import { ShieldCheck, ChevronDown } from "lucide-react"
 import BottomSheet from "./ui/BottomSheet.jsx"
 import Modal from "./ui/Modal.jsx"
 import MathContent from "./MathContent.jsx"
-import VideoGuide from "./VideoGuide.jsx"
 import { ONBOARDING_STEPS } from "../lib/onboardingSteps.js"
 import { getConsent } from "../api.js"
 import { useIsMobile } from "../lib/useMediaQuery.js"
@@ -59,7 +58,18 @@ function ConsentReminder() {
 function AboutContent() {
   return (
     <div className="flex flex-col gap-4">
-      <VideoGuide />
+      <div className="overflow-hidden rounded-xl bg-black">
+        <video
+          src="/demo/comment-ca-marche.webm"
+          className="block w-full"
+          autoPlay
+          muted
+          loop
+          controls
+          playsInline
+          preload="metadata"
+        />
+      </div>
 
       <div>
         <p className="font-heading mb-1 text-sm font-semibold text-base-content">Le projet</p>
@@ -92,10 +102,11 @@ function AboutContent() {
  * Section "Comment ça marche ?" — regroupe ce qui était auparavant éparpillé (bandeau vidéo
  * toujours visible, 3 cartes explicatives dans WelcomeCard, phrase d'intro) en un seul endroit
  * consulté à la demande plutôt qu'affiché en permanence à chaque ouverture : vidéo de
- * démonstration (VideoGuide, avec sa logique de masquage définitif inchangée), les 3 cartes
- * "comment ça marche", une courte présentation du projet, et un rappel du texte de consentement.
- * Ouverte depuis WelcomeCard et le pied de page (voir App.jsx). Rendue en feuille modale sur
- * mobile, en fenêtre centrée sur bureau — même contenu dans les deux cas.
+ * démonstration (contrôles natifs, pas d'en-tête ni de bouton propre — le seul bouton de
+ * fermeture est celui de la modale/feuille), les 3 cartes "comment ça marche", une courte
+ * présentation du projet, et un rappel du texte de consentement.
+ * Ouverte depuis le lien sous le champ de saisie (accueil, voir App.jsx). Rendue en feuille
+ * modale sur mobile, en fenêtre centrée sur bureau — même contenu dans les deux cas.
  */
 export default function AboutPanel({ open, onClose }) {
   const isMobile = useIsMobile()

@@ -13,7 +13,11 @@ import { emptyProfileFields, validateProfileFields } from "../lib/registrationVa
  * ProfileCompletionGate, qui part toujours d'une fiche vide. Distinct du lien « Changer » de
  * ProfilePanel (qui ne modifie que la classe) : ici l'élève peut corriger toute sa fiche.
  */
-export default function EditProfileSheet({ open, onClose, token }) {
+// `onSaved` prévient App.jsx d'une classe éventuellement changée (voir ClassSection dans
+// ProfilePanel.jsx pour le même besoin) : sans lui, la classe restait mise à jour côté serveur
+// mais figée côté React tant que la page n'était pas rechargée (chapitres, en-tête, questions
+// suivantes continuaient de partir sous l'ancienne classe).
+export default function EditProfileSheet({ open, onClose, token, onSaved }) {
   const [values, setValues] = useState(emptyProfileFields())
   const [errors, setErrors] = useState({})
   const [loadError, setLoadError] = useState("")
@@ -63,6 +67,7 @@ export default function EditProfileSheet({ open, onClose, token }) {
         is_candidat_libre: values.isCandidatLibre,
         school_name: values.isCandidatLibre ? null : values.schoolName,
       })
+      onSaved?.(values.classCode)
       setSaved(true)
       // Bref aperçu du message de confirmation avant de refermer la feuille — pas de fermeture
       // instantanée, sinon l'élève n'a pas le temps de voir que l'enregistrement a réussi.

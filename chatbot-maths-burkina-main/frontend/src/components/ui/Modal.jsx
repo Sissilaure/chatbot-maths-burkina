@@ -18,6 +18,9 @@ import { X } from "lucide-react"
 export default function Modal({ open, onClose, title, children }) {
   useEffect(() => {
     if (!open) return
+    // Mémorisé à l'ouverture pour lui rendre le focus à la fermeture (accessibilité clavier) :
+    // sans ça, le focus retombe sur <body> et un utilisateur au clavier perd sa position.
+    const triggerEl = document.activeElement
     function handleKeyDown(e) {
       if (e.key === "Escape") onClose()
     }
@@ -27,6 +30,7 @@ export default function Modal({ open, onClose, title, children }) {
     return () => {
       document.removeEventListener("keydown", handleKeyDown)
       document.body.style.overflow = previousOverflow
+      triggerEl?.focus?.()
     }
   }, [open, onClose])
 
@@ -49,7 +53,7 @@ export default function Modal({ open, onClose, title, children }) {
             // Empêche un clic à l'intérieur de la boîte de remonter jusqu'au fond (qui fermerait
             // la modale) — le fond et la boîte partagent maintenant le même conteneur flex.
             onClick={(e) => e.stopPropagation()}
-            className="z-50 flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-base-100 shadow-2xl"
+            className="z-50 flex max-h-[85vh] w-full max-w-[720px] flex-col overflow-hidden rounded-2xl bg-base-100 shadow-2xl"
             initial={{ opacity: 0, scale: 0.96, y: 8 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}

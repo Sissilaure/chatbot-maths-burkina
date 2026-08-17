@@ -1,19 +1,12 @@
-import React from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { motion } from "framer-motion"
-import { Sparkles, HelpCircle } from "lucide-react"
-import Card from "./ui/Card"
 import MathContent from "./MathContent"
 import { buildSuggestions } from "../lib/suggestions"
-import { useIsMobile } from "../lib/useMediaQuery"
-
-// Sur mobile, au plus 2 suggestions (densité réduite, voir RAPPORT_MOBILE.md §4) ; sur bureau,
-// toutes celles que buildSuggestions renvoie (4 aujourd'hui).
-const MOBILE_SUGGESTION_LIMIT = 2
 
 function SuggestionButtons({ suggestions, onSuggestionClick }) {
   if (suggestions.length === 0) return null
   return (
-    <div className="mb-4 flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5">
       {suggestions.map((q, i) => (
         <motion.button
           key={q}
@@ -30,51 +23,80 @@ function SuggestionButtons({ suggestions, onSuggestionClick }) {
   )
 }
 
-export default function WelcomeCard({ personalizedMessage, chapitre, onSuggestionClick, onOpenAbout }) {
-  const isMobile = useIsMobile()
-  const allSuggestions = buildSuggestions(chapitre)
-  const suggestions = isMobile ? allSuggestions.slice(0, MOBILE_SUGGESTION_LIMIT) : allSuggestions
+/** Message d'accueil personnalisé (compte avec historique) : coupé à 3 lignes visibles pour ne
+ * pas repousser les suggestions et le champ de saisie hors de l'écran sur mobile (voir
+ * RAPPORT_MOBILE.md). Le "Voir plus" ne s'affiche que si le texte dépasse vraiment ces 3 lignes. */
+function PersonalizedMessage({ text }) {
+  const [expanded, setExpanded] = useState(false)
+  const [truncatable, setTruncatable] = useState(false)
+  const contentRef = useRef(null)
+
+  useEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+    setTruncatable(el.scrollHeight > el.clientHeight + 1)
+  }, [text])
 
   return (
-    <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, ease: "easeOut" }}>
-      <Card glow className="overflow-hidden">
-        <div className="bg-gradient-to-br from-primary/10 via-secondary/5 to-transparent p-5 sm:p-6">
-          {personalizedMessage ? (
-            <div className="prose-chat mb-4 max-w-none">
-              <p className="font-heading mb-2 flex items-center gap-1.5 text-xl font-extrabold">
-                <Sparkles size={20} className="text-accent motion-safe:animate-pulse-slow" />
-                Bon retour !
-              </p>
-              <MathContent>{personalizedMessage}</MathContent>
-            </div>
-          ) : (
-            <>
-              {/* <p className="font-heading mb-1 flex items-center gap-1.5 text-xl font-extrabold">
-                <Sparkles size={20} className="text-accent motion-safe:animate-pulse-slow" />
-                Salut, prêt à progresser en maths ?
-              </p> */}
-              <p className="mb-4 text-base text-base-content/70">
-                Pose n'importe quelle question de maths, du niveau 6ème à la Terminale. Je m'adapte à toi.
-              </p>
-            </>
-          )}
+    <div className="w-full max-w-[440px] text-left">
+      <div ref={contentRef} className={`prose-chat max-w-none text-sm ${expanded ? "" : "line-clamp-3"}`}>
+        <MathContent>{text}</MathContent>
+      </div>
+      {truncatable && (
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="mt-1 text-xs font-semibold text-primary hover:underline"
+        >
+          {expanded ? "Voir moins" : "Voir plus"}
+        </button>
+      )}
+    </div>
+  )
+}
 
-          <SuggestionButtons suggestions={suggestions} onSuggestionClick={onSuggestionClick} />
+/** Écran d'accueil centré affiché tant qu'aucun message n'existe (voir App.jsx, qui centre
+ * verticalement ce composant dans la zone de chat). Trois profils distincts :
+ * - invité : "Bonjour" seul, classe seulement si choisie dans le sélecteur, pas de message
+ *   personnalisé (l'API l'exige, voir App.jsx qui ne passe personalizedMessage que si `username`).
+ * - compte neuf : "Bonjour <nom>" + classe/chapitre du compte, pas de message personnalisé
+ *   (aucun historique pour l'alimenter).
+ * - compte avec historique : pareil, plus le message personnalisé ci-dessus. */
+export default function WelcomeCard({ username, classeNom, chapitre, personalizedMessage, onSuggestionClick }) {
+  const suggestions = buildSuggestions(chapitre)
+  const contextLine = classeNom ? `${classeNom}${chapitre ? " · " + chapitre : ""}` : ""
 
-          {/* Vidéo de démo, 3 cartes explicatives, présentation du projet et rappel du
-              consentement ont rejoint AboutPanel (voir App.jsx) : un seul lien discret,
-              identique sur les deux tailles d'écran, plutôt qu'un contenu affiché en permanence
-              à chaque ouverture (voir RAPPORT_MOBILE.md/RAPPORT_MIGRATION.md). */}
-          <button
-            type="button"
-            onClick={onOpenAbout}
-            className="flex items-center gap-1.5 text-sm font-medium text-base-content/50 transition-colors hover:text-primary"
-          >
-            <HelpCircle size={14} />
-            Comment ça marche ?
-          </button>
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, ease: "easeOut" }}
+      className="flex flex-col items-center px-2 text-center"
+    >
+      <img
+        src="/logo-hakili-lab.png"
+        srcSet="/logo-hakili-lab.png 1x, /logo-hakili-lab@2x.png 2x"
+        width={72}
+        height={72}
+        alt="Hakili Lab"
+        className="h-14 w-14 md:h-[72px] md:w-[72px]"
+      />
+
+      <p className="font-heading mt-3 text-xl font-extrabold">{username ? `Bonjour ${username}` : "Bonjour"}</p>
+
+      {contextLine && <p className="mt-1 text-sm text-base-content/50">{contextLine}</p>}
+
+      {personalizedMessage && (
+        <div className="mt-4">
+          <PersonalizedMessage text={personalizedMessage} />
         </div>
-      </Card>
+      )}
+
+      {suggestions.length > 0 && (
+        <div className="mt-5 w-full max-w-[440px]">
+          <SuggestionButtons suggestions={suggestions} onSuggestionClick={onSuggestionClick} />
+        </div>
+      )}
     </motion.div>
   )
 }
