@@ -94,8 +94,8 @@ def _repair_latex_json_escapes(text: str) -> str:
 # generate_exercise, qui le traite à part (jamais ancré sur les documents de cours déposés :
 # aucun contenu de ce type dedans, vérifié).
 STAR_DIFFICULTY_LABELS = {
-    1: "1 ÉTOILE — QCM D'APPLICATION DIRECTE (une seule notion de base, restitution immédiate du cours)",
-    2: "2 ÉTOILES — APPLICATION GUIDÉE (1-2 étapes de raisonnement)",
+    1: "1 ÉTOILE — QCM D'APPLICATION DIRECTE (questions de cours)",
+    2: "2 ÉTOILES — APPLICATION DIRECTE DES DEFINITIONS, PROPRIETES, AXIOMES, REGLES ...",
     3: "3 ÉTOILES — NOTIONS COMBINÉES (plusieurs étapes, proche d'une évaluation de classe)",
     4: "4 ÉTOILES — SITUATION D'INTÉGRATION (énoncé contextualisé complexe, plusieurs notions combinées, niveau examen)",
     5: "5 ÉTOILES — TYPE OLYMPIADES (problème de concours : astuce ou idée non standard, hors du cadre direct du "
@@ -732,14 +732,19 @@ RÈGLES DE MISE EN FORME :
                 "bien cadrée sur l'exercice, ou recopie l'énoncé directement dans le chat.")
 
     # ========================================================================
-    # REMÉDIATION (QCM diagnostique de 8 questions sur le chapitre)
+    # PRÉREQUIS (QCM diagnostique sur les notions ANTÉRIEURES nécessaires à ce chapitre)
     # ========================================================================
 
-    def generate_remediation(self, class_level: str, chapter: str, history: list = None) -> list:
-        """QCM diagnostique de 8 questions sur le chapitre : sert à vérifier que l'élève a
-        compris le cours avant de continuer, et à repérer les notions précises à revoir sinon.
-        Si l'élève a posé des questions récemment, le QCM insiste davantage sur les notions
-        liées à ses préoccupations réelles plutôt que de survoler le chapitre au hasard."""
+    def generate_prerequis(self, class_level: str, chapter: str, history: list = None) -> list:
+        """Identifie les notions prérequises indispensables pour aborder ce chapitre (vues dans des
+        chapitres ANTÉRIEURS, pas le chapitre lui-même) et génère 1 à 2 questions à choix multiples
+        diagnostiques courtes par notion, pour vérifier qu'elle est encore maîtrisée avant de commencer.
+        Les fiches de cours Hakili Lab listent presque toujours ces prérequis explicitement en tête de
+        chapitre (ex: « Prérequis : le milieu d'un segment (Ch. 1), les angles (Ch. 3)... ») — voir le
+        bloc de retrieval ci-dessous, qui cible spécifiquement cette ligne plutôt que le contenu général
+        du chapitre. Si l'élève a posé des questions récentes, elles pèsent sur QUELLES notions méritent
+        2 questions plutôt qu'une, pas sur le fait de tester le chapitre en cours (voir _local_prerequis
+        pour le repli si Claude est indisponible)."""
 
         recent_questions = [
             turn.get("content", "").strip()
@@ -751,49 +756,73 @@ RÈGLES DE MISE EN FORME :
             context_block = (
                 "L'élève a récemment posé ces questions dans sa conversation (ordre chronologique) :\n"
                 + "\n".join(f'- « {q} »' for q in recent_questions) +
-                "\n\nCONSIGNE IMPORTANTE : fais porter une bonne partie des 8 questions sur les notions "
-                "concrètement en jeu dans ces questions (ses préoccupations réelles), pas seulement sur "
-                "un survol générique du chapitre. Complète avec d'autres notions du chapitre pour rester complet."
+                "\n\nCONSIGNE IMPORTANTE : si l'une de ces questions touche déjà une notion prérequise "
+                "de ce chapitre, prévois 2 questions diagnostiques pour celle-là plutôt qu'une seule "
+                "(elle mérite d'être vérifiée plus en profondeur) ; une question suffit pour les autres."
             )
         else:
-            context_block = "L'élève n'a pas encore posé de question précise : couvre le chapitre de façon équilibrée."
+            context_block = ("L'élève n'a pas encore posé de question précise : répartis les questions "
+                              "de façon équilibrée entre les notions prérequises identifiées.")
 
-        # Ancrage dans les documents fournis (même logique que generate_exercise) : filtre EXACT
-        # classe+chapitre pour ne récupérer que des extraits réellement déposés pour ce chapitre
-        # précis (utile en particulier pour les chapitres "Remédiation Hakili Lab", qui contiennent
-        # des modules de rattrapage tout faits avec exemples résolus et exercices corrigés).
+        # Repère utile quand le document de cours cite un chapitre antérieur par son numéro
+        # (ex: « Prérequis : ... (Ch. 3) », voir document_block plus bas) : le modèle peut alors
+        # relier ce numéro au bon intitulé plutôt que de deviner.
+        previous_chapters_block = ""
+        chapters_list = CURRICULUM.get(class_level, {}).get("chapters", [])
+        if chapter in chapters_list:
+            idx = chapters_list.index(chapter)
+            if idx > 0:
+                previous_chapters_block = "\n".join(f"Ch. {i} — {c}" for i, c in enumerate(chapters_list[:idx]))
+        previous_chapters_context = (
+            f"\nCHAPITRES ANTÉRIEURS DE {class_level}, POUR RÉFÉRENCE (numérotés comme dans les fiches de "
+            f"cours) :\n{previous_chapters_block}\n" if previous_chapters_block else ""
+        )
+
+        # Ancrage documentaire : la fiche de CE chapitre commence quasi-systématiquement par une ligne
+        # « Prérequis : notion (Ch. X), notion (Ch. Y)... » (vérifié sur les PDF Hakili Lab déposés) —
+        # la requête cible explicitement cette ligne, contrairement à une recherche générique sur le
+        # nom du chapitre qui ramènerait plutôt le contenu du chapitre lui-même.
         document_block = ""
         try:
             context_nodes = self._retrieve_with_filters(
-                chapter,
+                f"Prérequis nécessaires avant d'aborder le chapitre {chapter}",
                 [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
-                top_k=4,
+                top_k=3,
             )
             if context_nodes:
                 document_excerpts = "\n---\n".join(n.get_content()[:800] for n in context_nodes)
                 document_block = f"""
-DOCUMENTS DE COURS FOURNIS — appuie-toi EN PRIORITÉ sur ces extraits (mêmes notions, mêmes exemples \
-que le professeur a préparés) pour rédiger les questions et leurs explications :
+DOCUMENT DE COURS DE CE CHAPITRE — il commence presque toujours par une ligne « Prérequis : ... » qui liste \
+EXPLICITEMENT les notions attendues (et le chapitre antérieur où elles ont été vues) : si cette ligne apparaît \
+ci-dessous, base-toi DESSUS EN PRIORITÉ plutôt que d'inventer des prérequis toi-même :
 {document_excerpts}
 """
         except Exception as e:
-            print(f"[WARN] Recherche de contexte pour la remediation echouee: {e}")
+            print(f"[WARN] Recherche de contexte pour les prérequis echouee: {e}")
 
         system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
-Tu prépares un QCM diagnostique de remédiation pour un élève de {class_level} sur le chapitre « {chapter} », \
-AVANT qu'il ne continue le programme.
-
+Un élève de {class_level} va commencer le chapitre « {chapter} ». AVANT qu'il ne s'y lance, tu vérifies \
+qu'il maîtrise encore les notions prérequises — vues dans des chapitres ANTÉRIEURS, de cette année ou \
+d'une année précédente — dont ce chapitre a besoin. Tu ne testes JAMAIS le contenu du chapitre « {chapter} » \
+lui-même, seulement ce qui doit déjà être acquis avant de l'aborder.
+{previous_chapters_context}
 {context_block}
 {document_block}
 CONTRAINTES :
-- Fournis EXACTEMENT 8 questions à choix multiples, couvrant les différentes notions du chapitre \
-(pas seulement la première partie), de la plus basique à la plus avancée.
+- Identifie 3 à 5 notions prérequises indispensables pour ce chapitre (reste concentré sur ce qui est \
+vraiment nécessaire, pas un rappel exhaustif de toutes les années précédentes).
+- Pour chaque notion, génère 1 question à choix multiples diagnostique — 2 questions seulement pour une \
+notion plus fondamentale ou plus fragile (voir consigne sur les questions récentes de l'élève ci-dessus). \
+Au total, ne dépasse JAMAIS 7 questions.
+- Chaque question est COURTE et ACCESSIBLE (application directe, sans piège ni astuce) : le but est de \
+vérifier que la notion est acquise, pas de la retester en profondeur ni d'évaluer le chapitre à venir.
 - Chaque question a EXACTEMENT 4 choix, une seule bonne réponse.
-- Chaque question porte sur une "notion" précise et courte (2-5 mots, ex: "Addition de fractions", \
-"Réciproque du théorème de Pythagore") qui servira à dire à l'élève quoi réviser s'il se trompe.
+- Le champ "notion" reprend le nom court du PRÉREQUIS (2-5 mots, ex: "Milieu d'un segment", "Angles \
+alternes-internes") — jamais une notion du chapitre « {chapter} » lui-même.
 - Pour chaque question, donne une "explication" courte de la bonne réponse, et un "conseil" de révision \
-utile UNIQUEMENT si l'élève se trompe (rappelle si besoin une notion de niveau inférieur nécessaire pour \
-comprendre celle-ci).
+COURT utile UNIQUEMENT si l'élève se trompe (dis si possible où cette notion a été vue, ex: "revois les \
+angles, chapitre 3").
+- Reste concis partout (question, explication, conseil) : pas de phrases superflues.
 - Contexte réaliste et local burkinabè quand c'est pertinent.
 - N'utilise AUCUN emoji.
 
@@ -802,21 +831,23 @@ FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte 
 "reponse_correcte_index": 0, "explication": "...", "conseil": "..."}}, ...]}}
 """
 
-        user_message = f"Prépare le QCM de remédiation sur « {chapter} » pour un élève de {class_level}."
+        user_message = f"Prépare le diagnostic de prérequis avant le chapitre « {chapter} » pour un élève de {class_level}."
 
         response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}],
                                       max_tokens=config.MAX_TOKENS_REMEDIATION)
 
         if response:
-            questions = self._parse_remediation_json(response)
+            questions = self._parse_prerequis_json(response)
             if questions:
                 return questions
 
-        print("[WARN] Claude indisponible ou reponse non structuree pour la remediation, fallback local...")
-        return self._local_remediation(class_level, chapter)
+        print("[WARN] Claude indisponible ou reponse non structuree pour les prérequis, fallback local...")
+        return self._local_prerequis(class_level, chapter)
+
+    generate_remediation = generate_prerequis
 
     @staticmethod
-    def _parse_remediation_json(raw_text: str):
+    def _parse_prerequis_json(raw_text: str):
         """Extrait et valide les 8 questions du QCM de remédiation renvoyées par Claude."""
         text = raw_text.strip()
         text = re.sub(r"^```(json)?", "", text.strip(), flags=re.IGNORECASE).strip()
@@ -863,17 +894,21 @@ FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte 
 
         return questions or None
 
-    def _local_remediation(self, class_level: str, chapter: str) -> list:
-        """Fallback local pour le QCM de remédiation (utilisé uniquement si Claude est indisponible)."""
+    _parse_remediation_json = _parse_prerequis_json
+
+    def _local_prerequis(self, class_level: str, chapter: str) -> list:
+        """Fallback local pour le QCM de prérequis (utilisé uniquement si Claude est indisponible)."""
         return [{
             "notion": chapter or "Notion générale",
             "question": f"Le service Claude est momentanément indisponible : reviens plus tard pour un vrai "
-                         f"QCM de remédiation sur « {chapter} ».",
+                         f"QCM de prérequis sur « {chapter} ».",
             "choix": ["Réessayer plus tard", "-", "-", "-"],
             "reponse_correcte_index": 0,
             "explication": "Ce QCM est une version de secours, pas un vrai diagnostic.",
             "conseil": "",
         }]
+
+    _local_remediation = _local_prerequis
 
     # ========================================================================
     # ACCUEIL PERSONNALISÉ (élève connecté avec de l'historique)

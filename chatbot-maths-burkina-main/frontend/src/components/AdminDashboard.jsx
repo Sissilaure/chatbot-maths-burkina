@@ -199,16 +199,16 @@ export default function AdminDashboard({ token, username, theme, onToggleTheme, 
             value={overview && overview.success_rate != null ? `${Math.round(overview.success_rate)}%` : "—"}
           />
           <StatTile
-            icon={ClipboardCheck} label="Réponses aux QCM de remédiation" accent="bg-accent/15 text-accent"
+            icon={ClipboardCheck} label="Réponses aux QCM de prérequis" accent="bg-accent/15 text-accent"
             value={overview ? overview.quiz_answers : "—"}
           />
         </div>
 
         <Card className="p-5">
           <h2 className="font-heading mb-1 text-base font-semibold">Évolution du taux de réussite</h2>
-          <p className="mb-4 text-sm text-base-content/60">Résultats aux QCM de remédiation, par mois</p>
+          <p className="mb-4 text-sm text-base-content/60">Résultats aux QCM de prérequis, par mois</p>
           {!loading && trend.length === 0 ? (
-            <EmptyState text="Pas encore assez de données de remédiation pour tracer une tendance." />
+            <EmptyState text="Pas encore assez de données de prérequis pour tracer une tendance." />
           ) : (
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={trend} margin={{ top: 8, right: 12, bottom: 0, left: -12 }}>
@@ -233,7 +233,7 @@ export default function AdminDashboard({ token, username, theme, onToggleTheme, 
             <h2 className="font-heading mb-1 text-base font-semibold">Réussite par chapitre</h2>
             <p className="mb-4 text-sm text-base-content/60">Vert ≥ 75% · Orange 50-75% · Rouge &lt; 50%</p>
             {!loading && chapterData.length === 0 ? (
-              <EmptyState text="Aucune remédiation complétée pour l'instant." />
+              <EmptyState text="Aucun prérequis complété pour l'instant." />
             ) : (
               <ResponsiveContainer width="100%" height={Math.max(220, chapterData.length * 34)}>
                 <BarChart data={chapterData} layout="vertical" margin={{ top: 0, right: 24, bottom: 0, left: 0 }}>

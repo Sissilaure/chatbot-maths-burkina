@@ -9,7 +9,7 @@ import {
   simplifyResponse,
   generateExercise,
   explainExercisePhoto,
-  generateRemediation,
+  generatePrerequis,
   getCourseFileUrl,
   checkCourseAvailable,
   getSummary,
@@ -360,7 +360,7 @@ export default function App() {
   }
 
   function pushRemediationMessage(data) {
-    setMessages((prev) => [...prev, { type: "remediation", data, createdAt: new Date().toISOString() }])
+    setMessages((prev) => [...prev, { type: "prerequis", data, createdAt: new Date().toISOString() }])
   }
 
   function pushBotError(text) {
@@ -798,13 +798,13 @@ export default function App() {
     try {
       const history = buildHistoryUpTo(messages)
       const convId = await ensureConversation().catch(() => null)
-      const remediation = await generateRemediation(classCode, chapitre, history, convId)
+      const remediation = await generatePrerequis(classCode, chapitre, history, convId)
       pushRemediationMessage(remediation)
       recordTopicVisit(classCode, chapitre, classeNom)
       refreshProfile()
     } catch (err) {
       if (!interceptGateError(err)) {
-        pushBotError("Impossible de générer le QCM de remédiation pour le moment.")
+        pushBotError("Impossible de générer le QCM de prérequis pour le moment.")
       }
     }
     setLoading(false)
@@ -925,7 +925,7 @@ export default function App() {
   }
 
   // Le chapitre est facultatif pour générer un exercice (le serveur en choisit un lui-même sinon) :
-  // seule la classe est nécessaire. Voir le cours et la remédiation ciblent un chapitre précis,
+  // seule la classe est nécessaire. Voir le cours et les prérequis ciblent un chapitre précis,
   // donc restent conditionnés aux deux.
   const canGenerateExercise = Boolean(classCode)
   const canUseChapterFeatures = Boolean(classCode && chapitre)
@@ -1101,7 +1101,7 @@ export default function App() {
                           onNext={i === messages.length - 1 ? handleExercise : null}
                           generatingNext={i === messages.length - 1 && loading}
                         />
-                      ) : msg.type === "remediation" ? (
+                      ) : msg.type === "prerequis" ? (
                         <RemediationQuiz
                           data={msg.data}
                           onSubmitResults={(answers) => handleRemediationResults(msg.data, answers)}

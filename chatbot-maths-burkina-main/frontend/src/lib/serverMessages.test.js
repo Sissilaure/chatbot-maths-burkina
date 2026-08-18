@@ -37,10 +37,16 @@ describe("mapServerMessagesToClient", () => {
     expect(mapServerMessagesToClient(rows)).toEqual([{ type: "exercise", data: payload, createdAt: "t1" }])
   })
 
-  it("maps a remediation row to a client remediation message using its payload as data", () => {
+  it("maps a prerequis row to a client prerequis message using its payload as data", () => {
+    const payload = { chapter: "Les fractions", class_level: "6ème", questions: [{ question: "..." }] }
+    const rows = [{ role: "assistant", kind: "prerequis", content: "QCM de prérequis", payload, created_at: "t1" }]
+    expect(mapServerMessagesToClient(rows)).toEqual([{ type: "prerequis", data: payload, createdAt: "t1" }])
+  })
+
+  it("maps a legacy remediation row (old DB rows) to a client prerequis message", () => {
     const payload = { chapter: "Les fractions", class_level: "6ème", questions: [{ question: "..." }] }
     const rows = [{ role: "assistant", kind: "remediation", content: "QCM de remédiation", payload, created_at: "t1" }]
-    expect(mapServerMessagesToClient(rows)).toEqual([{ type: "remediation", data: payload, createdAt: "t1" }])
+    expect(mapServerMessagesToClient(rows)).toEqual([{ type: "prerequis", data: payload, createdAt: "t1" }])
   })
 
   it("returns an empty array for empty/undefined input", () => {

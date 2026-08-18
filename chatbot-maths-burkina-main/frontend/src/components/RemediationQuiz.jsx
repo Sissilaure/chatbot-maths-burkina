@@ -40,10 +40,10 @@ export default function RemediationQuiz({ data, onSubmitResults }) {
       <Card glow className="p-5">
         <div className="mb-3 flex items-center gap-2 text-primary">
           <ClipboardCheck size={18} />
-          <span className="font-heading font-semibold">Remédiation — {data.chapter}</span>
+          <span className="font-heading font-semibold">Prérequis — {data.chapter}</span>
         </div>
         <p className="mb-4 text-sm text-base-content/60">
-          Réponds à ces {questions.length} questions pour vérifier que tu as bien compris le chapitre avant de continuer.
+          Réponds à ces {questions.length} questions pour vérifier que tu maîtrises les prérequis de ce chapitre avant de le commencer.
         </p>
 
         <div className="space-y-3">
@@ -81,11 +81,11 @@ export default function RemediationQuiz({ data, onSubmitResults }) {
 
             {passed ? (
               <p className="text-sm text-base-content/70">
-                Tu as globalement compris le chapitre « {data.chapter} », tu peux continuer sereinement.
+                Tu maîtrises les prérequis de « {data.chapter} », tu peux le commencer sereinement.
               </p>
             ) : (
               <div className="text-sm text-base-content/70">
-                <p className="mb-2">Voici les notions à revoir avant de continuer :</p>
+                <p className="mb-2">Voici les prérequis à revoir avant de commencer ce chapitre :</p>
                 <ul className="list-disc space-y-1 pl-5">
                   {notionsToReview.map(([notion, conseil]) => (
                     <li key={notion}>

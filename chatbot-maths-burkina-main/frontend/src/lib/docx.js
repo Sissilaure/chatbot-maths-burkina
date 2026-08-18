@@ -121,8 +121,8 @@ export async function exportMessagesToDocx(messages, { filename = "chatmaths.doc
           )
         }
       }
-    } else if (msg.type === "remediation") {
-      children.push(new Paragraph({ text: "QCM de remédiation", heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 100 } }))
+    } else if (msg.type === "prerequis") {
+      children.push(new Paragraph({ text: "QCM de prérequis", heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 100 } }))
       children.push(...qcmParagraphs(docxLib, msg.data?.questions || []))
     }
   }
@@ -167,7 +167,7 @@ function historyMessageToParagraphs(docxLib, msg) {
       out.push(new Paragraph({ children: [new TextRun({ text: "Solution", bold: true })], spacing: { before: 100 } }))
       out.push(...markdownToParagraphs(docxLib, payload.solution))
     }
-  } else if (msg.kind === "remediation" && Array.isArray(payload.questions)) {
+  } else if ((msg.kind === "prerequis" || msg.kind === "remediation") && Array.isArray(payload.questions)) {
     out.push(...qcmParagraphs(docxLib, payload.questions))
   } else {
     out.push(...markdownToParagraphs(docxLib, msg.content || ""))

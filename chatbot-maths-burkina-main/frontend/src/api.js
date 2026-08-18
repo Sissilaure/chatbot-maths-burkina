@@ -251,16 +251,18 @@ export async function explainExercisePhoto(file, classCode = "", chapter = "", p
 }
 
 /**
- * QCM diagnostique de remédiation (8 questions) sur le chapitre choisi.
+ * QCM diagnostique de prérequis (8 questions) sur le chapitre choisi.
  */
-export async function generateRemediation(classCode, chapter, history = [], conversationId = null) {
-  const res = await fetch(`${API_BASE}/api/remediation`, {
+export async function generatePrerequis(classCode, chapter, history = [], conversationId = null) {
+  const res = await fetch(`${API_BASE}/api/prerequis`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ class_level: classCode, chapter, history, conversation_id: conversationId }),
   })
-  return handleJson(res, "Erreur lors de la génération du QCM de remédiation")
+  return handleJson(res, "Erreur lors de la génération du QCM de prérequis")
 }
+
+export const generateRemediation = generatePrerequis
 
 /**
  * URL du document de cours (PDF/DOCX/TXT) fourni pour ce chapitre, à ouvrir directement

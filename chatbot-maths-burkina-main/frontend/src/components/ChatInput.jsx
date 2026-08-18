@@ -211,9 +211,9 @@ export default function ChatInput({
           size="sm"
           onClick={onRemediation}
           disabled={!canChapterFeatures || loading}
-          title={!canChapterFeatures ? "Choisis une classe et un chapitre pour la remédiation" : "QCM diagnostique sur ce chapitre"}
+          title={!canChapterFeatures ? "Choisis une classe et un chapitre pour les prérequis" : "QCM diagnostique sur les prérequis de ce chapitre"}
         >
-          <ClipboardCheck size={14} /> Remédiation
+          <ClipboardCheck size={14} /> Prérequis
         </Button>
         <Button
           variant="outline"
@@ -239,8 +239,8 @@ export default function ChatInput({
           />
           <SheetAction
             icon={ClipboardCheck}
-            label="Test de remédiation"
-            hint={!canChapterFeatures ? "Choisis une classe et un chapitre" : "QCM diagnostique sur ce chapitre"}
+            label="Test de prérequis"
+            hint={!canChapterFeatures ? "Choisis une classe et un chapitre" : "QCM diagnostique sur les prérequis de ce chapitre"}
             onClick={() => runFromSheet(onRemediation)}
             disabled={!canChapterFeatures || loading}
           />

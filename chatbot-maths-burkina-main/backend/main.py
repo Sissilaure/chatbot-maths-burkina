@@ -125,11 +125,13 @@ class SimplifyRequest(BaseModel):
     chapter: str = ""
     conversation_id: Optional[str] = None
 
-class RemediationRequest(BaseModel):
+class PrerequisRequest(BaseModel):
     class_level: str
     chapter: str
     history: List[HistoryTurn] = []
     conversation_id: Optional[str] = None
+
+RemediationRequest = PrerequisRequest
 
 class SummaryRequest(BaseModel):
     history: List[HistoryTurn] = []
@@ -157,10 +159,12 @@ class ExerciseResponse(BaseModel):
     error: Optional[str] = None
 
 
-class RemediationResponse(BaseModel):
+class PrerequisResponse(BaseModel):
     chapter: str
     class_level: str
     questions: List[dict]
+
+RemediationResponse = PrerequisResponse
 
 class RegisterRequest(BaseModel):
     username: str
@@ -446,11 +450,12 @@ def ask_question_stream(request: Request, payload: QuestionRequest, user=Depends
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
-@app.post("/api/remediation", response_model=RemediationResponse)
+@app.post("/api/prerequis", response_model=PrerequisResponse)
 @limiter.limit(LLM_RATE_LIMIT)
-def get_remediation(request: Request, payload: RemediationRequest, user=Depends(auth.get_current_user_optional)):
-    """QCM diagnostique de 8 questions sur le chapitre : vérifie que l'élève a compris le cours
-    avant de continuer, et pointe les notions précises à revoir sinon."""
+def get_prerequis(request: Request, payload: PrerequisRequest, user=Depends(auth.get_current_user_optional)):
+    """QCM diagnostique sur les notions prérequises (vues dans des chapitres antérieurs) nécessaires
+    pour aborder ce chapitre : vérifie qu'elles sont encore maîtrisées avant de commencer, et pointe
+    celles à revoir sinon."""
     _ensure_authenticated_user_ready(user)
     try:
         class_level = _resolve_class_level(user, payload.class_level)
@@ -462,21 +467,26 @@ def get_remediation(request: Request, payload: RemediationRequest, user=Depends(
             raise HTTPException(status_code=400, detail="Invalid chapter for this class")
 
         history = [turn.dict() for turn in payload.history]
-        questions = rag_system.generate_remediation(class_level, chapter, history=history)
+        questions = rag_system.generate_prerequis(class_level, chapter, history=history)
 
         _persist_message_best_effort(
             user, payload.conversation_id, "assistant",
-            f"QCM de remédiation — {chapter}",
-            kind="remediation", payload={"chapter": chapter, "class_level": class_level, "questions": questions},
+            f"QCM de prérequis — {chapter}",
+            kind="prerequis", payload={"chapter": chapter, "class_level": class_level, "questions": questions},
             class_code=class_level, chapter=chapter,
         )
 
-        return RemediationResponse(chapter=chapter, class_level=class_level, questions=questions)
+        return PrerequisResponse(chapter=chapter, class_level=class_level, questions=questions)
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[ERROR] /api/remediation: {e}")
+        print(f"[ERROR] /api/prerequis: {e}")
         raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
+
+@app.post("/api/remediation", response_model=PrerequisResponse)
+@limiter.limit(LLM_RATE_LIMIT)
+def get_remediation(request: Request, payload: PrerequisRequest, user=Depends(auth.get_current_user_optional)):
+    return get_prerequis(request, payload, user)
 
 @app.api_route("/api/course/{class_code}/{chapter}", methods=["GET", "HEAD"])
 def get_course_file(class_code: str, chapter: str):

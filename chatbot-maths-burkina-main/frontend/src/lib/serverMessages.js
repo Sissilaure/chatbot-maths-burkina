@@ -20,8 +20,11 @@ export function mapServerMessagesToClient(rows) {
     if (row.kind === "exercise") {
       return { type: "exercise", data: row.payload || {}, createdAt: row.created_at }
     }
+    if (row.kind === "prerequis") {
+      return { type: "prerequis", data: row.payload || {}, createdAt: row.created_at }
+    }
     if (row.kind === "remediation") {
-      return { type: "remediation", data: row.payload || {}, createdAt: row.created_at }
+      return { type: "prerequis", data: row.payload || {}, createdAt: row.created_at }
     }
     // Un message assistant "photo"/"course" est affiché comme un échange de chat normal côté
     // client (voir App.jsx::handlePhotoExercise, qui pousse toujours kind="chat" en direct) —
