@@ -451,16 +451,23 @@ export default function App() {
    * ligne vide créée pour un élève connecté qui ne discute jamais). Le backend persiste ensuite
    * lui-même chaque échange dans cette conversation (voir conversation_id transmis par
    * handleSend/handleExercise/etc.), donc plus besoin d'un verrou anti-doublon ici : un seul
-   * appel par action, jamais deux en parallèle pour le même tour de conversation. */
-  async function ensureConversation() {
+   * appel par action, jamais deux en parallèle pour le même tour de conversation.
+   *
+   * `titleHint` : texte réel tapé/reçu (question, énoncé...) utilisé comme titre de la
+   * conversation dans l'historique — des mots-clés qui aident à s'y retrouver, plutôt que
+   * "classe · chapitre" qui est identique pour toutes les conversations du même chapitre. Sans
+   * hint (ex: un exercice généré en tout premier message, sans question tapée), on retombe sur
+   * un intitulé neutre ; le titre réel apparaîtra dès la première vraie question de la conversation. */
+  async function ensureConversation(titleHint = "") {
     if (!user) return null
     if (activeConversationIdRef.current) return activeConversationIdRef.current
 
     const token = getToken()
     const id = await createConversation(token, classCode, chapitre)
     setActiveConv(id)
+    const title = titleHint.trim() ? titleHint.trim().slice(0, 60) : "Nouvelle conversation"
     setConversations((prev) => [
-      { id, title: classCode && chapitre ? `${classCode} · ${chapitre}` : "Discussion libre", class_level: classCode, chapter: chapitre, updated_at: new Date().toISOString() },
+      { id, title, class_level: classCode, chapter: chapitre, updated_at: new Date().toISOString() },
       ...prev,
     ])
     return id
@@ -583,7 +590,7 @@ export default function App() {
 
     // Résolu une seule fois avant l'appel (voir ensureConversation) : le serveur persiste
     // désormais lui-même la question ET la réponse en une requête, via ce conversation_id.
-    const convId = await ensureConversation().catch(() => null)
+    const convId = await ensureConversation(q).catch(() => null)
 
     // Une photo d'exercice est "active" (envoyée plus tôt dans cette conversation, jamais
     // remplacée depuis) : on la renvoie avec ce message plutôt que de faire un chat texte normal,
@@ -698,7 +705,7 @@ export default function App() {
 
     setSimplifyingIndex(index)
     try {
-      const convId = await ensureConversation().catch(() => null)
+      const convId = await ensureConversation(questionForThisMessage).catch(() => null)
       const simplified = await simplifyResponse(questionForThisMessage, target.text, classCode, chapitre, convId)
       pushBotMessage(simplified, [], "simplify")
       setLastAnswer(simplified)
@@ -761,7 +768,7 @@ export default function App() {
     // que les vraies images, un PDF envoyé apparaît juste comme un message texte.
     const imageUrl = isImage ? URL.createObjectURL(file) : null
     pushUserMessage(displayText, imageUrl)
-    const convId = await ensureConversation().catch(() => null)
+    const convId = await ensureConversation(displayText).catch(() => null)
     try {
       const toSend = isImage ? await compressImageFile(file) : file
       const answer = await explainExercisePhoto(toSend, classCode, chapitre, accompanyingPrompt, [], convId)

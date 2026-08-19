@@ -11,7 +11,7 @@
  * logique de découpage Markdown/QCM vit dans docxModel.js (pure, testable sans la librairie docx
  * — voir docxModel.test.js) ; ce fichier se contente de traduire ce modèle en primitives Word.
  */
-import { parseMarkdownLines, qcmToLines, splitBoldSegments } from "./docxModel.js"
+import { parseMarkdownLines, qcmToLines, prerequisToLines, splitBoldSegments } from "./docxModel.js"
 import { formatMessageTime } from "./dateFormat.js"
 
 function segmentsToRuns(TextRun, segments, extraProps = {}) {
@@ -62,9 +62,9 @@ function markdownToParagraphs(docxLib, rawText) {
   return linesToParagraphs(docxLib, parseMarkdownLines(rawText))
 }
 
-function qcmParagraphs(docxLib, questions) {
-  const { Paragraph, TextRun } = docxLib
-  return qcmToLines(questions).map((line) => {
+function qcmLinesToParagraphs(docxLib, lines) {
+  const { Paragraph, HeadingLevel, TextRun } = docxLib
+  return lines.map((line) => {
     if (line.type === "choice") {
       return new Paragraph({
         children: [new TextRun({ text: `${line.correct ? "✓ " : "– "}${line.text}`, bold: line.correct })],
@@ -77,9 +77,26 @@ function qcmParagraphs(docxLib, questions) {
         spacing: { after: 100 },
       })
     }
+    if (line.type === "heading3") {
+      return new Paragraph({ children: segmentsToRuns(TextRun, line.segments), heading: HeadingLevel.HEADING_3, spacing: { before: 200, after: 60 } })
+    }
+    if (line.type === "text") {
+      return new Paragraph({ children: segmentsToRuns(TextRun, line.segments), spacing: { after: 100 } })
+    }
     // "question"
     return new Paragraph({ children: segmentsToRuns(TextRun, line.segments), spacing: { before: 140 } })
   })
+}
+
+function qcmParagraphs(docxLib, questions) {
+  return qcmLinesToParagraphs(docxLib, qcmToLines(questions))
+}
+
+/** Rappel de cours + exercices par notion (voir generate_prerequis côté backend) — distinct de
+ * qcmParagraphs (liste plate de questions, utilisée par generate_exercise) : ici chaque notion a
+ * son propre rappel affiché avant ses 1-2 exercices, voir prerequisToLines. */
+function prerequisParagraphs(docxLib, notions) {
+  return qcmLinesToParagraphs(docxLib, prerequisToLines(notions))
 }
 
 export async function exportMessagesToDocx(messages, { filename = "chatmaths.docx", title = "", subtitle = "" } = {}) {
@@ -122,8 +139,8 @@ export async function exportMessagesToDocx(messages, { filename = "chatmaths.doc
         }
       }
     } else if (msg.type === "prerequis") {
-      children.push(new Paragraph({ text: "QCM de prérequis", heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 100 } }))
-      children.push(...qcmParagraphs(docxLib, msg.data?.questions || []))
+      children.push(new Paragraph({ text: "Diagnostic de prérequis", heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 100 } }))
+      children.push(...prerequisParagraphs(docxLib, msg.data?.notions || []))
     }
   }
 
@@ -167,7 +184,11 @@ function historyMessageToParagraphs(docxLib, msg) {
       out.push(new Paragraph({ children: [new TextRun({ text: "Solution", bold: true })], spacing: { before: 100 } }))
       out.push(...markdownToParagraphs(docxLib, payload.solution))
     }
+  } else if ((msg.kind === "prerequis" || msg.kind === "remediation") && Array.isArray(payload.notions)) {
+    out.push(...prerequisParagraphs(docxLib, payload.notions))
   } else if ((msg.kind === "prerequis" || msg.kind === "remediation") && Array.isArray(payload.questions)) {
+    // Anciennes conversations enregistrées avant le passage à la structure {notion, rappel,
+    // exercices} (voir generate_prerequis côté backend) : forme plate encore lisible telle quelle.
     out.push(...qcmParagraphs(docxLib, payload.questions))
   } else {
     out.push(...markdownToParagraphs(docxLib, msg.content || ""))

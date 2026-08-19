@@ -414,7 +414,12 @@ def update_profile_fields(user_id: str, **fields) -> Optional[dict]:
 
 def create_conversation(user_id: str, class_code: str = "",
                         chapter: str = "") -> dict:
-    title = " · ".join(p for p in (class_code, chapter) if p) or "Nouvelle conversation"
+    # Titre neutre à la création : remplacé par la première vraie question de l'élève (voir
+    # add_message, "Titre auto = première question de l'élève") plutôt que "classe · chapitre",
+    # qui n'aide pas à distinguer les conversations d'une même classe/chapitre entre elles. Une
+    # conversation démarrée par une action sans question tapée (exercice, prérequis...) garde ce
+    # titre neutre, faute d'un premier message "user" pour le mettre à jour.
+    title = "Nouvelle conversation"
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             f"""INSERT INTO {SCHEMA}.conversations (user_id, title, class_code, chapter)

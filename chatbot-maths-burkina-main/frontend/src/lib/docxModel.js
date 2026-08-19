@@ -155,7 +155,7 @@ export function parseMarkdownLines(rawText) {
 }
 
 /**
- * Convertit une liste de questions QCM (voir generate_remediation/generate_exercise côté backend :
+ * Convertit une liste de questions QCM (voir generate_exercise côté backend :
  * {question, choix[], reponse_correcte_index, explication}) en lignes typées pour l'export Word.
  */
 export function qcmToLines(questions) {
@@ -168,6 +168,31 @@ export function qcmToLines(questions) {
     if (q.explication) {
       lines.push({ type: "explication", segments: splitBoldSegments(q.explication) })
     }
+  })
+  return lines
+}
+
+/**
+ * Convertit les groupes {notion, rappel, exercices} du diagnostic de prérequis (voir
+ * generate_prerequis côté backend) en lignes typées pour l'export Word : un rappel de cours par
+ * notion, suivi de ses 1-2 exercices — numérotation continue sur tout le diagnostic.
+ */
+export function prerequisToLines(notions) {
+  const lines = []
+  let counter = 0
+  ;(notions || []).forEach((n) => {
+    lines.push({ type: "heading3", segments: splitBoldSegments(n.notion || "") })
+    if (n.rappel) lines.push({ type: "text", segments: splitBoldSegments(n.rappel) })
+    ;(n.exercices || []).forEach((ex) => {
+      counter += 1
+      lines.push({ type: "question", segments: splitBoldSegments(`${counter}. ${ex.question || ""}`) })
+      ;(ex.choix || []).forEach((choice, ci) => {
+        lines.push({ type: "choice", correct: ci === ex.reponse_correcte_index, text: convertLatexToPlainText(choice) })
+      })
+      if (ex.explication) {
+        lines.push({ type: "explication", segments: splitBoldSegments(ex.explication) })
+      }
+    })
   })
   return lines
 }

@@ -747,14 +747,17 @@ RÈGLES DE MISE EN FORME :
 
     def generate_prerequis(self, class_level: str, chapter: str, history: list = None) -> list:
         """Identifie les notions prérequises indispensables pour aborder ce chapitre (vues dans des
-        chapitres ANTÉRIEURS, pas le chapitre lui-même) et génère 1 à 2 questions à choix multiples
-        diagnostiques courtes par notion, pour vérifier qu'elle est encore maîtrisée avant de commencer.
+        chapitres ANTÉRIEURS, pas le chapitre lui-même) et renvoie, pour chacune, un court RAPPEL de
+        cours (ce que l'élève doit déjà savoir) suivi de 1 à 2 exercices diagnostiques — jamais l'inverse :
+        l'élève doit pouvoir relire la notion avant de s'y confronter, pas deviner à l'aveugle puis
+        recevoir une correction. Renvoie une liste de groupes {notion, rappel, exercices} (voir
+        _parse_prerequis_json), PAS une liste plate de questions.
         Les fiches de cours Hakili Lab listent presque toujours ces prérequis explicitement en tête de
         chapitre (ex: « Prérequis : le milieu d'un segment (Ch. 1), les angles (Ch. 3)... ») — voir le
         bloc de retrieval ci-dessous, qui cible spécifiquement cette ligne plutôt que le contenu général
         du chapitre. Si l'élève a posé des questions récentes, elles pèsent sur QUELLES notions méritent
-        2 questions plutôt qu'une, pas sur le fait de tester le chapitre en cours (voir _local_prerequis
-        pour le repli si Claude est indisponible)."""
+        2 exercices plutôt qu'un seul, pas sur le fait de tester le chapitre en cours (voir
+        _local_prerequis pour le repli si Claude est indisponible)."""
 
         recent_questions = [
             turn.get("content", "").strip()
@@ -767,11 +770,11 @@ RÈGLES DE MISE EN FORME :
                 "L'élève a récemment posé ces questions dans sa conversation (ordre chronologique) :\n"
                 + "\n".join(f'- « {q} »' for q in recent_questions) +
                 "\n\nCONSIGNE IMPORTANTE : si l'une de ces questions touche déjà une notion prérequise "
-                "de ce chapitre, prévois 2 questions diagnostiques pour celle-là plutôt qu'une seule "
-                "(elle mérite d'être vérifiée plus en profondeur) ; une question suffit pour les autres."
+                "de ce chapitre, prévois 2 exercices diagnostiques pour celle-là plutôt qu'un seul "
+                "(elle mérite d'être vérifiée plus en profondeur) ; un exercice suffit pour les autres."
             )
         else:
-            context_block = ("L'élève n'a pas encore posé de question précise : répartis les questions "
+            context_block = ("L'élève n'a pas encore posé de question précise : répartis les exercices "
                               "de façon équilibrée entre les notions prérequises identifiées.")
 
         # Repère utile quand le document de cours cite un chapitre antérieur par son numéro
@@ -818,27 +821,34 @@ lui-même, seulement ce qui doit déjà être acquis avant de l'aborder.
 {previous_chapters_context}
 {context_block}
 {document_block}
+STRUCTURE ATTENDUE, PAR NOTION (dans cet ORDRE, jamais l'inverse) :
+1. Un RAPPEL DE COURS autonome sur la notion prérequise elle-même (définition, propriété ou méthode, \
++ un exemple chiffré rapide si utile) : l'élève doit pouvoir le lire et comprendre la notion SANS avoir \
+encore vu les exercices. Ce n'est ni un indice ni une reformulation de l'exercice — c'est un vrai rappel \
+de cours, comme une fiche de révision de 3 à 5 phrases.
+2. ENSUITE seulement, 1 à 2 exercices diagnostiques à choix multiples pour vérifier que ce rappel est \
+compris.
+
 CONTRAINTES :
 - Identifie 3 à 5 notions prérequises indispensables pour ce chapitre (reste concentré sur ce qui est \
 vraiment nécessaire, pas un rappel exhaustif de toutes les années précédentes).
-- Pour chaque notion, génère 1 question à choix multiples diagnostique — 2 questions seulement pour une \
-notion plus fondamentale ou plus fragile (voir consigne sur les questions récentes de l'élève ci-dessus). \
-Au total, ne dépasse JAMAIS 7 questions.
-- Chaque question est COURTE et ACCESSIBLE (application directe, sans piège ni astuce) : le but est de \
-vérifier que la notion est acquise, pas de la retester en profondeur ni d'évaluer le chapitre à venir.
-- Chaque question a EXACTEMENT 4 choix, une seule bonne réponse.
+- Pour chaque notion, 1 exercice diagnostique — 2 exercices seulement pour une notion plus fondamentale \
+ou plus fragile (voir consigne sur les questions récentes de l'élève ci-dessus). Au total, ne dépasse \
+JAMAIS 7 exercices.
+- Chaque exercice est COURT et ACCESSIBLE (application directe du rappel, sans piège ni astuce) : le but \
+est de vérifier que la notion est acquise, pas de la retester en profondeur ni d'évaluer le chapitre à venir.
+- Chaque exercice a EXACTEMENT 4 choix, une seule bonne réponse.
 - Le champ "notion" reprend le nom court du PRÉREQUIS (2-5 mots, ex: "Milieu d'un segment", "Angles \
 alternes-internes") — jamais une notion du chapitre « {chapter} » lui-même.
-- Pour chaque question, donne une "explication" courte de la bonne réponse, et un "conseil" de révision \
-COURT utile UNIQUEMENT si l'élève se trompe (dis si possible où cette notion a été vue, ex: "revois les \
-angles, chapitre 3").
-- Reste concis partout (question, explication, conseil) : pas de phrases superflues.
+- Pour chaque exercice, donne une "explication" courte confirmant la bonne réponse (1-2 phrases) — le \
+rappel de cours a déjà enseigné la notion, cette explication ne fait que confirmer, pas réexpliquer en entier.
+- Reste concis partout (rappel, exercice, explication) : pas de phrases superflues.
 - Contexte réaliste et local burkinabè quand c'est pertinent.
 - N'utilise AUCUN emoji.
 
 FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code) :
-{{"questions": [{{"notion": "...", "question": "...", "choix": ["...", "...", "...", "..."], \
-"reponse_correcte_index": 0, "explication": "...", "conseil": "..."}}, ...]}}
+{{"notions": [{{"notion": "...", "rappel": "...", "exercices": [{{"question": "...", \
+"choix": ["...", "...", "...", "..."], "reponse_correcte_index": 0, "explication": "..."}}, ...]}}, ...]}}
 """
 
         user_message = f"Prépare le diagnostic de prérequis avant le chapitre « {chapter} » pour un élève de {class_level}."
@@ -858,7 +868,8 @@ FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte 
 
     @staticmethod
     def _parse_prerequis_json(raw_text: str):
-        """Extrait et valide les 8 questions du QCM de remédiation renvoyées par Claude."""
+        """Extrait et valide les groupes {notion, rappel, exercices} du diagnostic de prérequis
+        renvoyé par Claude (voir FORMAT DE SORTIE dans generate_prerequis)."""
         text = raw_text.strip()
         text = re.sub(r"^```(json)?", "", text.strip(), flags=re.IGNORECASE).strip()
         text = re.sub(r"```$", "", text.strip()).strip()
@@ -877,45 +888,57 @@ FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte 
             except json.JSONDecodeError:
                 return None
 
-        raw_questions = data.get("questions")
-        if not isinstance(raw_questions, list):
+        raw_notions = data.get("notions")
+        if not isinstance(raw_notions, list):
             return None
 
-        questions = []
-        for item in raw_questions:
-            if not isinstance(item, dict):
+        notions = []
+        for notion_item in raw_notions:
+            if not isinstance(notion_item, dict):
                 continue
-            question = str(item.get("question", "")).strip()
-            notion = str(item.get("notion", "")).strip()
-            choix = item.get("choix")
-            correct_index = item.get("reponse_correcte_index")
-            if not question or not notion or not isinstance(choix, list) or len(choix) != 4:
+            notion = str(notion_item.get("notion", "")).strip()
+            rappel = str(notion_item.get("rappel", "")).strip()
+            raw_exercices = notion_item.get("exercices")
+            if not notion or not rappel or not isinstance(raw_exercices, list):
                 continue
-            if not isinstance(correct_index, int) or not (0 <= correct_index < 4):
-                continue
-            questions.append({
-                "notion": notion,
-                "question": question,
-                "choix": [str(c) for c in choix],
-                "reponse_correcte_index": correct_index,
-                "explication": str(item.get("explication", "")).strip(),
-                "conseil": str(item.get("conseil", "")).strip(),
-            })
 
-        return questions or None
+            exercices = []
+            for item in raw_exercices:
+                if not isinstance(item, dict):
+                    continue
+                question = str(item.get("question", "")).strip()
+                choix = item.get("choix")
+                correct_index = item.get("reponse_correcte_index")
+                if not question or not isinstance(choix, list) or len(choix) != 4:
+                    continue
+                if not isinstance(correct_index, int) or not (0 <= correct_index < 4):
+                    continue
+                exercices.append({
+                    "question": question,
+                    "choix": [str(c) for c in choix],
+                    "reponse_correcte_index": correct_index,
+                    "explication": str(item.get("explication", "")).strip(),
+                })
+
+            if exercices:
+                notions.append({"notion": notion, "rappel": rappel, "exercices": exercices})
+
+        return notions or None
 
     _parse_remediation_json = _parse_prerequis_json
 
     def _local_prerequis(self, class_level: str, chapter: str) -> list:
-        """Fallback local pour le QCM de prérequis (utilisé uniquement si Claude est indisponible)."""
+        """Fallback local pour le diagnostic de prérequis (utilisé uniquement si Claude est indisponible)."""
         return [{
             "notion": chapter or "Notion générale",
-            "question": f"Le service Claude est momentanément indisponible : reviens plus tard pour un vrai "
-                         f"QCM de prérequis sur « {chapter} ».",
-            "choix": ["Réessayer plus tard", "-", "-", "-"],
-            "reponse_correcte_index": 0,
-            "explication": "Ce QCM est une version de secours, pas un vrai diagnostic.",
-            "conseil": "",
+            "rappel": f"Le service Claude est momentanément indisponible : reviens plus tard pour un vrai "
+                      f"diagnostic de prérequis sur « {chapter} ».",
+            "exercices": [{
+                "question": "Ceci est une version de secours, pas un vrai diagnostic.",
+                "choix": ["Réessayer plus tard", "-", "-", "-"],
+                "reponse_correcte_index": 0,
+                "explication": "",
+            }],
         }]
 
     _local_remediation = _local_prerequis
