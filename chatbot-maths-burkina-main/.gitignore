@@ -64,5 +64,9 @@ backend/data/.jwt_secret
 # généré via `npm run build`, jamais commité (comme frontend/dist, déjà ignoré ci-dessus).
 backend/frontend_dist/
 
+# Cache local du modèle d'embeddings (voir EMBED_CACHE_DIR dans rag_system.py) : régénéré par
+# le Dockerfile au build, ou au premier lancement local — jamais commité (fichiers binaires lourds).
+backend/hf_cache/
+
 # Logs
 *.log

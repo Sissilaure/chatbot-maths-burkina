@@ -15,6 +15,15 @@ import anthropic
 
 EMBED_DIM = 384  # sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 
+# Dossier explicite pour le cache du modèle d'embeddings — SANS ce `cache_folder` explicite,
+# HuggingFaceEmbedding retombe sur llama_index.core.utils.get_cache_dir() (/tmp/llama_index),
+# alors que le Dockerfile le pré-télécharge dans le cache HuggingFace par défaut (~/.cache/
+# huggingface/hub) pour éviter tout accès réseau au démarrage (voir Dockerfile) : les deux
+# chemins ne correspondaient pas, donc le conteneur re-téléchargeait (et échouait si le réseau
+# sortant était bloqué/instable) à chaque démarrage au lieu d'utiliser le cache déjà présent
+# dans l'image. Ce chemin doit rester identique à celui utilisé dans le Dockerfile.
+EMBED_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hf_cache")
+
 
 FIGURE_FORMAT_INSTRUCTIONS = """FIGURES GÉOMÉTRIQUES — RÈGLE ABSOLUE, PRIORITAIRE SUR TOUT LE RESTE :
 Dès qu'une figure, un schéma ou un dessin serait utile (triangle, cercle, angle, repère, configuration de \
@@ -106,7 +115,8 @@ STAR_DIFFICULTY_LABELS = {
 class RAGSystem:
     def __init__(self):
         self.embed_model = HuggingFaceEmbedding(
-            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            cache_folder=EMBED_CACHE_DIR,
         )
         LlamaSettings.embed_model = self.embed_model
 
