@@ -12,17 +12,21 @@ export default function Header({ theme, onToggleTheme, user, onLoginClick, onLog
       className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-base-300/60 bg-base-100/70 px-3 backdrop-blur-md md:h-auto md:px-6 md:py-3"
     >
       <div className="flex min-w-0 items-center gap-2.5 md:gap-3">
+        {/* min-h/min-w 44px : cible tactile minimale sur mobile (voir RAPPORT_MOBILE.md), sans
+            agrandir le logo lui-même — seule la zone cliquable autour grandit. */}
         <button
           type="button"
           onClick={onNewConversation}
           title="Nouvelle conversation"
-          className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-transform hover:scale-105 active:scale-95 md:h-10 md:w-10"
+          className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center transition-transform hover:scale-105 active:scale-95 md:min-h-0 md:min-w-0"
         >
-          <span className="absolute inset-0 rounded-xl bg-primary/50 motion-safe:animate-pulse-ring" />
-          <div className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary via-secondary to-accent text-white shadow-glow md:h-10 md:w-10">
-            <Sigma size={16} className="md:hidden" />
-            <Sigma size={20} className="hidden md:block" />
-          </div>
+          <span className="relative flex h-8 w-8 items-center justify-center rounded-xl md:h-10 md:w-10">
+            <span className="absolute inset-0 rounded-xl bg-primary/50 motion-safe:animate-pulse-ring" />
+            <span className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary via-secondary to-accent text-white shadow-glow md:h-10 md:w-10">
+              <Sigma size={16} className="md:hidden" />
+              <Sigma size={20} className="hidden md:block" />
+            </span>
+          </span>
         </button>
         <div className="min-w-0">
           <h1 className="font-heading text-base font-extrabold leading-tight md:text-lg">
