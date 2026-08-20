@@ -1,82 +1,104 @@
 # Bilan de session — branche `migration_neon`
 
 > Document de passation, à donner tel quel à la prochaine session Claude Code qui reprend ce
-> dossier. Rédigé le 2026-08-14.
+> dossier. Rédigé le 2026-08-20. Remplace la version du 14 août (obsolète : tout ce qu'elle
+> décrivait comme "non committé" a depuis été committé et largement dépassé).
 
 ## Contexte du dépôt
 
 - Repo GitHub : `Sissilaure/chatbot-maths-burkina`.
 - **Dossier de travail** : `C:\Users\Sylviane\Downloads\chatbot-maths-burkina-migration_neon\chatbot-maths-burkina-main\`
-  — un **worktree Git séparé** du dossier habituel de l'utilisatrice (`...\chatbot-maths-burkina-main\chatbot-maths-burkina-main\`, resté sur `main`). Les deux ont le même nom de sous-dossier final, donc le nom affiché en haut de l'explorateur VS Code ne permet PAS de les distinguer. Vérifier via le contenu : `RAPPORT_MIGRATION.md` et `RAPPORT_MOBILE.md` n'existent que dans ce dossier-ci (migration_neon).
-- Branche locale `migration_neon`, créée à partir de `origin/migration_neon`, actuellement **à jour** avec le dernier commit du collaborateur (Eddie ZIDA, `c8418b2` — refonte mobile en feuille modale, classe fixée au compte, `birth_date`, `AboutPanel`, horodatage des messages).
-- **Rien n'est committé.** Tous les changements listés ci-dessous sont dans le répertoire de travail, prêts à être relus/committés.
+- Branche `migration_neon`, **à jour avec `origin/migration_neon`**, working tree propre (rien en
+  attente de commit). Dernier commit : `80ffacc` (voir liste des commits de cette session plus bas).
+- L'app est **déployée en production** sur un VPS séparé (pas Railway/Vercel, contrairement à ce
+  que décrit `DEPLOY.md` — ce doc est obsolète pour ce déploiement-ci) : voir section Déploiement.
 
-## Migration base de données déjà appliquée (ne pas refaire)
+## Ce qui a été fait cette session (dans l'ordre)
 
-`backend/migrations/004_birth_date_drop_region.sql` a été exécutée sur la **vraie base Neon (production)** : `birth_year` → `birth_date`, colonne `region` supprimée. C'est fait, irréversible, ne pas relancer.
+1. **Renommage remédiation → prérequis**, bout en bout (backend + frontend + export Word). Le
+   diagnostic teste maintenant les notions des chapitres **antérieurs** (jamais le chapitre en
+   cours), en s'appuyant sur la ligne « Prérequis : ... (Ch. X) » présente en tête de chaque fiche
+   de cours Hakili Lab.
+2. **Refonte du format** : chaque notion prérequise a maintenant un vrai **rappel de cours** (3-5
+   phrases, autonome) suivi de 1-2 exercices diagnostiques — pas un QCM sec. Schéma JSON :
+   `{"questions": [{"notion", "rappel", "exercices": [{"question","choix","reponse_correcte_index","explication"}]}]}`
+   (le nom de champ externe `"questions"` est resté pour compat, seule la forme des éléments a
+   changé — piège pour qui retouche ça, voir `RemediationQuiz.jsx::isNotionGroup`).
+3. **Titres de conversation** dans l'historique : mots-clés de la question tapée (ou de l'action)
+   plutôt que "classe · chapitre".
+4. **Bugs trouvés et corrigés en cours de route** (aucun signalé au départ, trouvés en creusant) :
+   - Cache du modèle d'embeddings mal aligné entre le `Dockerfile` (build) et `rag_system.py`
+     (exécution) → le conteneur retéléchargeait à chaque démarrage et pouvait crasher si le réseau
+     sortant du serveur était instable.
+   - Page blanche au clic sur "Prérequis" : le frontend lisait un champ `data.notions` qui n'a
+     jamais existé côté API.
+   - `MESSAGE_KINDS` (backend/database.py) ne listait pas `"prerequis"` → persistance silencieuse
+     en `kind="chat"` pour un élève connecté (le quiz interactif ne se réaffichait plus en
+     rouvrant la conversation).
+   - **Cache navigateur** : `index.html` n'avait aucun `Cache-Control`, donc un navigateur pouvait
+     continuer à charger un vieux bundle JS après un redéploiement, même après Ctrl+F5 — c'était la
+     vraie cause d'un "ça remarche pas" qui a persisté après plusieurs correctifs. Fixé avec
+     `no-cache` sur `index.html` et cache long `immutable` sur `/assets/*` (hashés par Vite).
+   - Formules mathématiques en texte brut (`a^n` au lieu de `$a^n$`) dans les rappels de
+     prérequis : `generate_prerequis` était le seul prompt de génération sans la consigne LaTeX
+     (`MATH_FORMAT_INSTRUCTIONS`, maintenant une constante partagée dans `rag_system.py`).
+   - Un **error boundary React** global a été ajouté (`ErrorBoundary.jsx`) — n'existait pas du
+     tout avant : n'importe quelle erreur de rendu faisait disparaître toute l'app sans message,
+     juste une page blanche.
+5. **19 conversations vides** supprimées en base (soft-delete) sur les comptes de test — des
+   coquilles créées par des tentatives d'exercice/prérequis qui avaient échoué pendant une panne
+   de crédit Anthropic (résolue, pas un bug côté code).
+6. Script **`~/chatmaths-backend/redeploy.sh`** créé sur le serveur : une seule commande fait tout
+   (git pull, build frontend dans un conteneur Node jetable, build Docker, bascule du conteneur
+   avec health-check et rollback auto). Voir section Déploiement.
 
-## Corrections apportées cette session (demandes de l'utilisatrice / de son responsable)
+## Déploiement — lire avant de redéployer quoi que ce soit
 
-1. **Page d'accueil (`AuthGate.jsx`)** allégée : accroche "Ton prof infatigable", sous-titre et liste
-   de fonctionnalités retirés. Ne reste que le logo + le titre "Progresse en maths, à ton rythme.",
-   recentré verticalement dans le panneau et agrandi (2rem → 2.75rem).
-2. **Doublon "classe" en mode mobile corrigé** : la pastille (`InfoPill`) au-dessus du champ de
-   saisie dans `ChatInput.jsx` a été retirée — elle faisait doublon avec l'affichage du panneau
-   Réglages/Historique, malgré la refonte en feuille modale du collaborateur.
-3. **Bouton "Modifier mon profil"** ajouté :
-   - Badge nom d'utilisateur du `Header.jsx` (desktop) + bouton dédié dans la sidebar mobile
-     (onglet "Historique").
-   - Ouvre `EditProfileSheet.jsx` (nouveau composant), pré-rempli avec les vraies valeurs actuelles
-     (classe, genre, date de naissance, candidat libre, établissement) via un nouvel endpoint
-     backend `GET /api/profile/fields` (n'existait pas).
-   - Se ferme automatiquement ~700 ms après un enregistrement réussi.
-   - Distinct du lien "Changer" du collaborateur dans `ProfilePanel.jsx` (qui ne modifie que la
-     classe) : celui-ci couvre toute la fiche.
-4. **Sidebar desktop simplifiée** pour un compte connecté : ne garde que Historique / Chapitre /
-   Difficulté des exercices. Retirés : le bandeau "Ta classe est celle de ton compte...", la carte
-   "Ma classe", le panneau "Ton profil" (`ProfilePanel`, résumés de progression). **Inchangé pour un
-   visiteur non connecté** (qui a toujours besoin du sélecteur de classe).
-5. Texte **"Entrée pour envoyer · Maj+Entrée pour une nouvelle ligne"** retiré de la barre d'outils
-   desktop du champ de saisie (`ChatInput.jsx`).
-6. **Logo Hakili Lab** ajouté dans le pied de page (`frontend/public/hakili-lab-logo.jpg`, fourni
-   par l'utilisatrice), affiché en entier (pas rogné), agrandi pour être bien visible.
-7. **En attente, sur demande explicite de l'utilisatrice** : rendre "Hakili Lab" cliquable vers un
-   lien externe — à faire seulement après son prochain redéploiement.
+- URL actuelle : **http://167.233.234.219:8001/** (VPS partagé avec d'autres apps sans rapport —
+  `parcours-informatique`, `correction-assistee`, `guichet-entrepreneur` : ne pas y toucher).
+- SSH : `ssh sylviane@167.233.234.219` (clé déjà configurée). **Ce compte n'a pas sudo/root**,
+  seulement l'appartenance au groupe `docker`.
+- Redéployer : `ssh sylviane@167.233.234.219 "~/chatmaths-backend/redeploy.sh"` — une seule
+  commande, tout est automatisé (voir le script pour le détail, notamment le health-check qui
+  patiente jusqu'à 90s pour laisser Neon se réveiller).
+- Secrets dans `~/chatmaths-backend/container.env` sur le serveur — ne jamais en afficher le
+  contenu.
+- **En attente** : domaine `https://amira.hakililab.com/` — le DNS pointe déjà vers ce serveur,
+  il ne manque que la config nginx + certificat HTTPS (config prête, calquée sur
+  `/etc/nginx/sites-available/parcours.hakililab.com` déjà en place sur ce même serveur), mais ça
+  nécessite un accès root que `sylviane` n'a pas. Demander à la personne qui a configuré
+  `parcours.hakililab.com`.
 
-## Fichiers modifiés / créés (non committés)
+## Commits de cette session (du plus ancien au plus récent)
 
-- `backend/main.py` (+ route `GET /api/profile/fields`)
-- `frontend/src/App.jsx`
-- `frontend/src/api.js`
-- `frontend/src/components/AuthGate.jsx`
-- `frontend/src/components/ChatInput.jsx`
-- `frontend/src/components/Header.jsx`
-- `frontend/src/components/Sidebar.jsx`
-- `frontend/src/components/EditProfileSheet.jsx` (nouveau)
-- `frontend/public/hakili-lab-logo.jpg` (nouveau, binaire)
+```
+ca59faa Remplace la remédiation par un vrai diagnostic de prérequis
+c5876ef Fixe le cache du modèle d'embeddings (chemin incohérent build/runtime)
+ba5fc30 Prérequis : rappel de cours avant les exercices, plutôt qu'un QCM sec
+c1c4949 Fixe la page blanche au clic sur Prérequis (mauvais nom de champ)
+acc9531 Ajoute un error boundary global (page blanche sans lui en cas de crash)
+a5beda2 Fixe MESSAGE_KINDS : "prerequis" manquait, retombait silencieusement sur "chat"
+47939f4 Fixe le cache navigateur qui servait un vieux bundle JS après déploiement
+80ffacc Prérequis : ajoute la consigne LaTeX manquante (formules en texte brut)
+```
 
 ## État des tests (dernière exécution)
 
-- Backend (pytest) : 77/77 ✅ (1 échec initial dû à une coupure réseau Neon transitoire, confirmé
-  non reproductible en le relançant seul).
-- Frontend (vitest) : 38/38 ✅.
+- Frontend (vitest) : 45/45 ✅.
+- Vérification en direct sur le lien de production (Playwright + curl), pas seulement en local :
+  parcours invité complet (chat, exercice, résumé, prérequis) sans erreur JS, formules LaTeX bien
+  rendues, persistance en base vérifiée avec un compte de test (créé puis supprimé).
 
-## Serveurs de test lancés pendant cette session
+## Autre contexte utile
 
-- Backend : `http://127.0.0.1:8000` (`uvicorn --reload`, depuis `backend/.venv` Python 3.11).
-- Frontend : `http://localhost:5174` (`npm run dev -- --port 5174`).
-- Compte de test : `test_migration_neon_1786641529026` / `TestMigrationNeon2026!`.
-- ⚠️ Le port 5173 est déjà occupé par un autre process Node sur cette machine (pas lié à ce
-  projet) — ne pas le tuer, utiliser un autre port pour retester.
-- ⚠️ Le rechargement automatique du backend (`--reload`) ne recharge pas toujours fiablement les
-  routes après une édition de `main.py` (symptôme : 404 sur une route qui vient d'être ajoutée) —
-  un vrai redémarrage du process est parfois nécessaire.
+Une **autre session Claude Code** a travaillé sur ce même projet directement sur le serveur (via
+SSH, sans jamais commit/push) avant cette session — source de confusion en début de session
+(changements locaux non commités mystérieux, `git stash` nécessaire côté serveur). Le script
+`redeploy.sh` existe justement pour que les prochaines modifications passent par git + un process
+répétable plutôt que par des éditions ad hoc sur le serveur — continuer à l'utiliser.
 
 ## À faire ensuite
 
-1. Relire le diff complet avec l'utilisatrice et committer (rien n'est committé actuellement).
-2. Point 7 : rendre "Hakili Lab" cliquable, après son redéploiement.
-3. Coordonner avec le collaborateur (Eddie ZIDA) avant tout merge de `migration_neon` vers `main` —
-   il continue probablement d'y pousser des commits en parallèle (c'est déjà arrivé une fois cette
-   session, cf. l'historique de la conversation : un commit `c8418b2` est arrivé pendant qu'on
-   travaillait, il a fallu le récupérer et adapter le travail en cours en conséquence).
+1. Finaliser `https://amira.hakililab.com/` (bloqué sur l'accès root, voir ci-dessus).
+2. Rien d'autre en attente identifié à la fin de cette session — l'app est fonctionnelle et
+   vérifiée en production.
