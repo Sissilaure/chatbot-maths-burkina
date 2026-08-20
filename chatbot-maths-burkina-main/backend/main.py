@@ -36,6 +36,32 @@ _persistence_failure_count = 0
 # local/Railway (frontend déployé à part, ex. Vercel) : les routes concernées restent inactives.
 _FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "frontend_dist")
 
+
+def _index_html_response() -> FileResponse:
+    """`index.html` ne doit JAMAIS être mis en cache par le navigateur : c'est lui qui référence
+    les noms de fichiers hashés du build courant (ex: index-BBEfrWtj.js) — sans ce header, un
+    navigateur peut le garder en cache (heuristique basée sur Last-Modified, active par défaut
+    tant qu'aucun Cache-Control n'est présent) et continuer à charger un VIEUX bundle JS après
+    chaque redéploiement, jusqu'à planter sur une forme de données que ce vieux code ne connaît
+    plus (observé en prod : erreur JS provenant d'un bundle remplacé depuis plusieurs déploiements).
+    `no-cache` (pas `no-store`) : le navigateur revalide via ETag à chaque fois plutôt que de
+    reprendre bêtement l'ancien fichier, mais économise la bande passante avec un 304 si rien n'a
+    changé."""
+    response = FileResponse(os.path.join(_FRONTEND_DIST, "index.html"))
+    response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
+class _ImmutableStaticFiles(StaticFiles):
+    """Les fichiers sous /assets (JS/CSS du build Vite) portent un hash de contenu dans leur nom :
+    un même nom de fichier désigne TOUJOURS le même contenu, donc un cache long et "immutable" est
+    sans risque — un nouveau build produit de nouveaux noms, jamais une réécriture silencieuse."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
 # Limite de débit : protège à la fois le portefeuille (chaque appel Claude coûte) et les comptes
 # (empêche de tester des mots de passe en boucle sur /api/auth/login). En mémoire par processus —
 # suffisant pour un déploiement mono-instance ; passer sur un backend Redis si un jour on scale
@@ -245,9 +271,8 @@ class ProfileUpdateRequest(BaseModel):
 def read_root():
     # Déploiements "tout-en-un" (frontend servi par ce même backend, voir plus bas dans ce
     # fichier) : la page d'accueil doit être l'appli React, pas ce message JSON.
-    index_path = os.path.join(_FRONTEND_DIST, "index.html")
-    if os.path.isfile(index_path):
-        return FileResponse(index_path)
+    if os.path.isfile(os.path.join(_FRONTEND_DIST, "index.html")):
+        return _index_html_response()
     return {
         "message": "Chatbot Maths Burkina Faso API",
         "version": "1.0",
@@ -1150,7 +1175,7 @@ def health_check():
 if os.path.isdir(_FRONTEND_DIST):
     _assets_dir = os.path.join(_FRONTEND_DIST, "assets")
     if os.path.isdir(_assets_dir):
-        app.mount("/assets", StaticFiles(directory=_assets_dir), name="frontend-assets")
+        app.mount("/assets", _ImmutableStaticFiles(directory=_assets_dir), name="frontend-assets")
 
     @app.get("/{full_path:path}")
     def serve_frontend(full_path: str):
@@ -1159,7 +1184,7 @@ if os.path.isdir(_FRONTEND_DIST):
         candidate = os.path.join(_FRONTEND_DIST, full_path)
         if full_path and os.path.isfile(candidate):
             return FileResponse(candidate)
-        return FileResponse(os.path.join(_FRONTEND_DIST, "index.html"))
+        return _index_html_response()
 
 
 if __name__ == "__main__":
