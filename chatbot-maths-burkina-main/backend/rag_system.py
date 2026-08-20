@@ -52,6 +52,13 @@ comme "(BC) // (DE)"). Place chaque `label` LÉGÈREMENT À L'ÉCART du trait ou
 perpendiculairement au segment, jamais pile sur ses coordonnées ni à l'intérieur d'un polygone rempli), pour qu'il \
 ne se superpose pas au dessin. Place ce bloc directement dans ta réponse, au bon endroit dans le texte."""
 
+MATH_FORMAT_INSTRUCTIONS = """FORMULES ET SYMBOLES — RÈGLE ABSOLUE : toute formule ou expression mathématique s'écrit \
+en LaTeX : `$...$` pour une formule en ligne, `$$...$$` pour une formule isolée. N'écris JAMAIS une formule en texte \
+brut (écris $a^n$, jamais a^n ; écris $a^m \\times a^n = a^{m+n}$, jamais a^m x a^n = a^(m+n)). Cela vaut aussi pour \
+tous les symboles mathématiques (∈, ≤, ≥, √, π, →, ∑, ∞, vecteurs, exposants, indices...) : toujours en LaTeX \
+(`\\infty`, `\\in`, `\\leq`, `\\to`, `\\sqrt{}`, `x^{2}`, `u_{n}`...), jamais en Unicode brut ni épelés en toutes \
+lettres. Écris $+\\infty$, jamais « + infini » ; $x \\in \\mathbb{R}$, jamais « x appartient à R »."""
+
 NO_EMOJI_INSTRUCTIONS = """TON ET MISE EN FORME — RÈGLE ABSOLUE : N'utilise JAMAIS d'emoji ni de pictogramme (aucun symbole \
 du type ✅, ⚠️, 💡, 🎉, 👋, 💪, 📐, 🚀, ✨, etc.), nulle part dans ta réponse, même pour marquer une réussite, un \
 conseil ou un encouragement. Marque l'importance uniquement avec la mise en forme Markdown : **gras** pour les \
@@ -818,6 +825,8 @@ Un élève de {class_level} va commencer le chapitre « {chapter} ». AVANT qu'i
 qu'il maîtrise encore les notions prérequises — vues dans des chapitres ANTÉRIEURS, de cette année ou \
 d'une année précédente — dont ce chapitre a besoin. Tu ne testes JAMAIS le contenu du chapitre « {chapter} » \
 lui-même, seulement ce qui doit déjà être acquis avant de l'aborder.
+
+{MATH_FORMAT_INSTRUCTIONS}
 {previous_chapters_context}
 {context_block}
 {document_block}
