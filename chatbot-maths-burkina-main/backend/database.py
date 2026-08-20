@@ -36,7 +36,7 @@ _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 _CODE_LENGTH = 6
 
 MESSAGE_KINDS = (
-    "chat", "exercise", "remediation", "summary",
+    "chat", "exercise", "prerequis", "remediation", "summary",
     "simplify", "photo", "course",
 )
 
