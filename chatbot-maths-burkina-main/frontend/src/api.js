@@ -1,4 +1,12 @@
-const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
+// Par défaut, URL relative (même origine que la page) plutôt qu'une adresse absolue codée en dur :
+// ce même build sert alors correctement l'appli qu'elle soit visitée par IP:port ou par un nom de
+// domaine, en HTTP ou en HTTPS — une adresse absolue en http:// codée au moment du build cassait
+// tout ("Mixed Content" bloqué par le navigateur) dès que l'appli était aussi servie en HTTPS sous
+// un nom de domaine (ex: amira.hakililab.com), un déploiement pourtant identique par ailleurs. En
+// local (`npm run dev`), le proxy Vite (voir vite.config.js, `/api` -> 127.0.0.1:8000) fait le
+// lien. VITE_API_URL reste utile pour un déploiement où frontend et backend sont sur deux origines
+// distinctes (ex: Vercel + Railway, voir DEPLOY.md) : à définir explicitement dans ce cas.
+const API_BASE = import.meta.env.VITE_API_URL || ""
 
 /** Construit une Error enrichie de `.status` (code HTTP) et `.reason` (voir main.py : les 428
  * consentement/fiche incomplète renvoient `{detail: {reason, message}}`, les autres erreurs un
