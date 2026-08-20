@@ -992,6 +992,7 @@ export default function App() {
         onLoginClick={handleLoginClick}
         onLogout={handleLogout}
         onEditProfile={openEditProfile}
+        onNewConversation={handleNewConversation}
       />
 
       {!serverOnline && (
