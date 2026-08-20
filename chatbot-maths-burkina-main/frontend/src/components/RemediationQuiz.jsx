@@ -11,7 +11,15 @@ const PASS_THRESHOLD = 0.8
 /** Anciennes conversations enregistrées avant le passage à la structure {notion, rappel,
  * exercices} (voir generate_prerequis côté backend) : `data.questions` était alors une liste
  * plate {notion, question, choix, reponse_correcte_index, explication}. Regroupée ici par notion
- * pour rester affichable telle quelle (rappel vide : ces anciennes questions n'en avaient pas). */
+ * pour rester affichable telle quelle (rappel vide : ces anciennes questions n'en avaient pas).
+ * Le champ JSON s'appelle "questions" dans les DEUX formats (nom conservé côté API pour la
+ * compatibilité, voir PrerequisResponse) : on distingue donc l'ancien du nouveau par la FORME de
+ * chaque élément (un groupe a "exercices", une ancienne question a "choix" directement) plutôt
+ * que par un nom de champ. */
+function isNotionGroup(item) {
+  return Boolean(item) && Array.isArray(item.exercices)
+}
+
 function groupLegacyQuestions(questions) {
   const byNotion = new Map()
   questions.forEach((q) => {
@@ -23,8 +31,8 @@ function groupLegacyQuestions(questions) {
 
 /** Aplatit les groupes {notion, rappel, exercices} en une liste d'exercices indexée globalement
  * (numérotation continue sur tout le diagnostic, état des réponses par index global) — tout en
- * gardant la trace du groupe d'origine (voir groupedByNotion plus bas) pour l'affichage et pour
- * les résultats renvoyés à onSubmitResults (un par exercice, avec sa notion). */
+ * gardant la trace du groupe d'origine (notionIndex) pour l'affichage et pour les résultats
+ * renvoyés à onSubmitResults (un par exercice, avec sa notion). */
 function flattenExercices(notions) {
   const flat = []
   notions.forEach((n, notionIndex) => {
@@ -36,7 +44,8 @@ function flattenExercices(notions) {
 }
 
 export default function RemediationQuiz({ data, onSubmitResults }) {
-  const notions = data?.notions || (Array.isArray(data?.questions) ? groupLegacyQuestions(data.questions) : [])
+  const rawItems = Array.isArray(data?.questions) ? data.questions : []
+  const notions = isNotionGroup(rawItems[0]) ? rawItems : groupLegacyQuestions(rawItems)
   const exercices = flattenExercices(notions)
   const [answers, setAnswers] = useState({})
   const [submitted, setSubmitted] = useState(false)

@@ -139,8 +139,11 @@ export async function exportMessagesToDocx(messages, { filename = "chatmaths.doc
         }
       }
     } else if (msg.type === "prerequis") {
+      // Le champ JSON s'appelle "questions" côté API (nom conservé pour compatibilité, voir
+      // PrerequisResponse) même si chaque élément est maintenant un groupe {notion, rappel,
+      // exercices} — voir RemediationQuiz.jsx::isNotionGroup pour la même distinction.
       children.push(new Paragraph({ text: "Diagnostic de prérequis", heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 100 } }))
-      children.push(...prerequisParagraphs(docxLib, msg.data?.notions || []))
+      children.push(...prerequisParagraphs(docxLib, msg.data?.questions || []))
     }
   }
 
@@ -184,12 +187,13 @@ function historyMessageToParagraphs(docxLib, msg) {
       out.push(new Paragraph({ children: [new TextRun({ text: "Solution", bold: true })], spacing: { before: 100 } }))
       out.push(...markdownToParagraphs(docxLib, payload.solution))
     }
-  } else if ((msg.kind === "prerequis" || msg.kind === "remediation") && Array.isArray(payload.notions)) {
-    out.push(...prerequisParagraphs(docxLib, payload.notions))
   } else if ((msg.kind === "prerequis" || msg.kind === "remediation") && Array.isArray(payload.questions)) {
-    // Anciennes conversations enregistrées avant le passage à la structure {notion, rappel,
-    // exercices} (voir generate_prerequis côté backend) : forme plate encore lisible telle quelle.
-    out.push(...qcmParagraphs(docxLib, payload.questions))
+    // Le champ JSON s'appelle "questions" dans les DEUX formats (nom conservé côté API pour la
+    // compatibilité, voir PrerequisResponse) : on distingue l'ancienne forme plate {notion,
+    // question, choix...} de la nouvelle {notion, rappel, exercices} par la FORME du premier
+    // élément, comme RemediationQuiz.jsx::isNotionGroup côté affichage.
+    const isNotionGroup = payload.questions.length > 0 && Array.isArray(payload.questions[0]?.exercices)
+    out.push(...(isNotionGroup ? prerequisParagraphs(docxLib, payload.questions) : qcmParagraphs(docxLib, payload.questions)))
   } else {
     out.push(...markdownToParagraphs(docxLib, msg.content || ""))
   }
