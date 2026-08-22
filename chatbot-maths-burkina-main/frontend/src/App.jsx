@@ -8,9 +8,9 @@ import {
   askQuestionStream,
   simplifyResponse,
   generateExercise,
+  generateExerciseSolution,
   explainExercisePhoto,
   generatePrerequis,
-  getCourseFileUrl,
   checkCourseAvailable,
   getSummary,
   listConversations,
@@ -32,6 +32,7 @@ import ChatInput from "./components/ChatInput.jsx"
 import TypingIndicator from "./components/TypingIndicator.jsx"
 import WelcomeCard from "./components/WelcomeCard.jsx"
 import AboutPanel from "./components/AboutPanel.jsx"
+import CourseViewer from "./components/CourseViewer.jsx"
 import EditProfileSheet from "./components/EditProfileSheet.jsx"
 import BottomSheet from "./components/ui/BottomSheet.jsx"
 import BackgroundBlobs from "./components/BackgroundBlobs.jsx"
@@ -98,6 +99,7 @@ function DateSeparator({ iso }) {
 export default function App() {
   const isMobile = useIsMobile()
   const [aboutOpen, setAboutOpen] = useState(false)
+  const [courseViewerOpen, setCourseViewerOpen] = useState(false)
   const [editProfileOpen, setEditProfileOpen] = useState(false)
   // Ferme la feuille Réglages/Historique (mobile) avant d'ouvrir celle du profil : sinon les deux
   // BottomSheet s'empilent visuellement (celle du profil ouverte par-dessus, celle du dessous
@@ -190,6 +192,11 @@ export default function App() {
   // avant, un pour le message élève et un pour la réponse), ce qui élimine la course qui
   // nécessitait auparavant un verrou supplémentaire (creatingConversationRef, supprimé).
   const activeConversationIdRef = useRef(null)
+  // Requête LLM actuellement en cours (chat, exercice, prérequis, résumé, simplification...) —
+  // un seul contrôleur à la fois puisqu'une seule de ces actions tourne à la fois (voir `loading`).
+  // Voir handleStop() : le bouton "envoyer" se change en carré pendant le chargement (ChatInput.jsx)
+  // pour permettre à l'élève d'annuler plutôt que d'attendre une réponse longue à générer.
+  const abortControllerRef = useRef(null)
   const classeNom = classes.find((c) => c.code === classCode)?.name || ""
 
   useEffect(() => {
@@ -592,6 +599,11 @@ export default function App() {
     // désormais lui-même la question ET la réponse en une requête, via ce conversation_id.
     const convId = await ensureConversation(q).catch(() => null)
 
+    // Un seul contrôleur à la fois (voir abortControllerRef) : handleStop() l'utilise pour
+    // annuler quelle que soit l'action en cours, sans avoir à savoir laquelle spécifiquement.
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
     // Une photo d'exercice est "active" (envoyée plus tôt dans cette conversation, jamais
     // remplacée depuis) : on la renvoie avec ce message plutôt que de faire un chat texte normal,
     // sinon Claude ne "voit" plus l'image et ne peut pas répondre à un suivi comme "résous le a".
@@ -599,14 +611,14 @@ export default function App() {
     if (activePhoto) {
       setLoading(true)
       try {
-        const answer = await explainExercisePhoto(activePhoto, sendClassCode, sendChapitre, q, history, convId)
+        const answer = await explainExercisePhoto(activePhoto, sendClassCode, sendChapitre, q, history, convId, controller.signal)
         pushBotMessage(answer, [], "chat")
         setLastQuestion(q)
         setLastAnswer(answer)
         recordTopicVisit(sendClassCode, sendChapitre, sendClasseNom)
         refreshProfile()
       } catch (err) {
-        if (!interceptGateError(err)) {
+        if (err?.name !== "AbortError" && !interceptGateError(err)) {
           pushBotError("Impossible de continuer sur cette photo pour le moment. Réessaie, ou renvoie la photo.")
         }
       } finally {
@@ -625,6 +637,7 @@ export default function App() {
 
     try {
       await askQuestionStream(q, sendClassCode, sendChapitre, history, convId, {
+        signal: controller.signal,
         onDelta: (delta) => {
           if (firstChunk) {
             setLoading(false)
@@ -639,6 +652,13 @@ export default function App() {
           setLastAnswer(fullText)
           recordTopicVisit(sendClassCode, sendChapitre, sendClasseNom)
           refreshProfile()
+        },
+        onAbort: () => {
+          // Arrêt volontaire (bouton stop) : on garde ce qui a déjà été reçu, sans le traiter
+          // comme une erreur ni marquer le sujet comme "vu" (réponse incomplète).
+          patchLastMessage((last) => ({ ...last, streaming: false, text: fullText }))
+          setLastQuestion(q)
+          setLastAnswer(fullText)
         },
         onError: (err) => {
           if (interceptGateError(err)) {
@@ -658,6 +678,12 @@ export default function App() {
       setLoading(false)
       setStreaming(false)
     }
+  }
+
+  /** Annule l'action en cours (chat, exercice, prérequis, résumé, simplification) — voir le
+   * bouton "envoyer" de ChatInput.jsx, qui se change en carré pendant le chargement. */
+  function handleStop() {
+    abortControllerRef.current?.abort()
   }
 
   async function handleRegenerate(index) {
@@ -729,6 +755,8 @@ export default function App() {
   async function handleExercise() {
     if (!classCode || loading || streaming) return
     setLoading(true)
+    const controller = new AbortController()
+    abortControllerRef.current = controller
     try {
       const convId = await ensureConversation().catch(() => null)
       const priorExercises = messages
@@ -738,16 +766,30 @@ export default function App() {
           return { role: "assistant", content: `Exercice déjà proposé dans cette conversation : ${summary}` }
         })
       const history = [...buildHistoryUpTo(messages), ...priorExercises]
-      const exercise = await generateExercise(classCode, chapitre, difficulty, history, convId)
+      const exercise = await generateExercise(classCode, chapitre, difficulty, history, convId, controller.signal)
       pushExerciseMessage(exercise)
       recordTopicVisit(classCode, exercise.chapter || chapitre, classeNom)
       refreshProfile()
     } catch (err) {
-      if (!interceptGateError(err)) {
+      if (err?.name !== "AbortError" && !interceptGateError(err)) {
         pushBotError("Impossible de générer l'exercice pour le moment.")
       }
     }
     setLoading(false)
+  }
+
+  /** Génère la correction d'un exercice déjà affiché, à la demande (voir ExerciseCard.jsx, clic
+   * sur "Voir la solution détaillée") — pas de setLoading/gestion globale ici : ExerciseCard gère
+   * son propre état de chargement localement, sur son seul bouton, pour ne pas figer le reste de
+   * l'interface pendant qu'un élève consulte une correction. Les métadonnées de l'exercice
+   * (chapitre/classe/difficulté déjà choisis par le backend à la génération) voyagent avec
+   * l'exercice lui-même plutôt que de redépendre de classCode/chapitre/difficulty courants, qui
+   * ont pu changer depuis. */
+  async function handleFetchExerciseSolution(exercise) {
+    return generateExerciseSolution(
+      exercise.class_level, exercise.chapter, exercise.difficulty,
+      exercise.enonce, exercise.indices, exercise.figure
+    )
   }
 
   async function handlePhotoExercise(file) {
@@ -796,21 +838,26 @@ export default function App() {
       showToast("Cours non disponible pour ce chapitre pour le moment.", "error")
       return
     }
-    window.open(getCourseFileUrl(classCode, chapitre), "_blank")
+    // Visualiseur interne (CourseViewer, voir plus bas) plutôt que window.open sur le fichier
+    // directement : un PDF ouvert par le navigateur expose ses propres boutons
+    // "Télécharger"/"Imprimer" (contrôles natifs, pas retirables depuis la page).
+    setCourseViewerOpen(true)
   }
 
   async function handleRemediation() {
     if (!classCode || !chapitre || loading || streaming) return
     setLoading(true)
+    const controller = new AbortController()
+    abortControllerRef.current = controller
     try {
       const history = buildHistoryUpTo(messages)
       const convId = await ensureConversation().catch(() => null)
-      const remediation = await generatePrerequis(classCode, chapitre, history, convId)
+      const remediation = await generatePrerequis(classCode, chapitre, history, convId, controller.signal)
       pushRemediationMessage(remediation)
       recordTopicVisit(classCode, chapitre, classeNom)
       refreshProfile()
     } catch (err) {
-      if (!interceptGateError(err)) {
+      if (err?.name !== "AbortError" && !interceptGateError(err)) {
         pushBotError("Impossible de générer le QCM de prérequis pour le moment.")
       }
     }
@@ -820,13 +867,15 @@ export default function App() {
   async function handleSummary() {
     if (loading || streaming) return
     setLoading(true)
+    const controller = new AbortController()
+    abortControllerRef.current = controller
     try {
       const history = buildHistoryUpTo(messages)
       const convId = await ensureConversation().catch(() => null)
-      const content = await getSummary(history, classCode, chapitre, convId)
+      const content = await getSummary(history, classCode, chapitre, convId, controller.signal)
       pushBotMessage(content, [], "summary")
     } catch (err) {
-      if (!interceptGateError(err)) {
+      if (err?.name !== "AbortError" && !interceptGateError(err)) {
         pushBotError("Impossible de générer le résumé pour le moment.")
       }
     }
@@ -1108,6 +1157,7 @@ export default function App() {
                           exercise={msg.data}
                           onNext={i === messages.length - 1 ? handleExercise : null}
                           generatingNext={i === messages.length - 1 && loading}
+                          onFetchSolution={handleFetchExerciseSolution}
                         />
                       ) : msg.type === "prerequis" ? (
                         <RemediationQuiz
@@ -1140,6 +1190,7 @@ export default function App() {
             question={question}
             setQuestion={setQuestion}
             onSend={handleSend}
+            onStop={handleStop}
             onExercise={handleExercise}
             onCourse={handleCourse}
             onRemediation={handleRemediation}
@@ -1175,6 +1226,12 @@ export default function App() {
       </footer>
 
       <AboutPanel open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      <CourseViewer
+        open={courseViewerOpen}
+        onClose={() => setCourseViewerOpen(false)}
+        classCode={classCode}
+        chapter={chapitre}
+      />
       {user && (
         <EditProfileSheet
           open={editProfileOpen}

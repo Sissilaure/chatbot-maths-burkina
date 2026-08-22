@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react"
 import {
-  SendHorizontal, PencilRuler, BookOpen, ListChecks, ClipboardCheck, Camera, ImageOff,
+  SendHorizontal, Square, PencilRuler, BookOpen, ListChecks, ClipboardCheck, Camera, ImageOff,
   MoreHorizontal, FileDown, FileText,
 } from "lucide-react"
 import Button from "./ui/Button"
@@ -57,6 +57,7 @@ export default function ChatInput({
   question,
   setQuestion,
   onSend,
+  onStop,
   onExercise,
   onCourse,
   onRemediation,
@@ -165,18 +166,22 @@ export default function ChatInput({
           onKeyDown={handleKeyDown}
           disabled={loading}
         />
+        {/* Pendant une génération en cours (chat, exercice, prérequis, résumé — voir `loading`
+            dans App.jsx), ce même bouton devient "stop" plutôt que de rester un envoi désactivé :
+            l'élève n'a plus besoin d'attendre la fin d'une réponse longue pour passer à autre
+            chose (voir handleStop dans App.jsx, AbortController côté api.js). */}
         <Button
-          variant="primary"
+          variant={loading ? "outline" : "primary"}
           // size="lg" (bureau) ajoute px-5 (20px de chaque côté) qui, cumulé avec min-w-[44px] ci-
           // dessous, poussait ce bouton bien au-delà de 44px sur mobile (voir RAPPORT_MOBILE.md
           // §2) : size="icon" y donne exactement 44×44 (padding p-2 + le min-w/min-h explicite).
           size={isMobile ? "icon" : "lg"}
-          onClick={() => onSend()}
-          disabled={!question.trim() || loading}
-          title="Envoyer"
+          onClick={() => (loading ? onStop?.() : onSend())}
+          disabled={!loading && !question.trim()}
+          title={loading ? "Arrêter la génération" : "Envoyer"}
           className="min-h-[44px] min-w-[44px] shrink-0"
         >
-          <SendHorizontal size={18} />
+          {loading ? <Square size={16} className="fill-current" /> : <SendHorizontal size={18} />}
         </Button>
       </div>
 

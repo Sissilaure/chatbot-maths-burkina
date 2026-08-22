@@ -144,6 +144,14 @@ class ExerciseRequest(BaseModel):
     history: List[HistoryTurn] = []
     conversation_id: Optional[str] = None
 
+class ExerciseSolutionRequest(BaseModel):
+    class_level: str
+    chapter: str
+    difficulty: int = 2
+    enonce: str
+    indices: List[str] = []
+    figure: Optional[dict] = None
+
 class SimplifyRequest(BaseModel):
     answer: str
     class_level: str
@@ -183,6 +191,10 @@ class ExerciseResponse(BaseModel):
     figure: Optional[dict] = None
     qcm: Optional[List[dict]] = None
     error: Optional[str] = None
+
+class ExerciseSolutionResponse(BaseModel):
+    solution: str
+    reponse_finale: str = ""
 
 
 class PrerequisResponse(BaseModel):
@@ -533,7 +545,11 @@ def get_course_file(class_code: str, chapter: str):
     if not file_path:
         raise HTTPException(status_code=404, detail="Aucun document de cours disponible pour ce chapitre")
 
-    return FileResponse(file_path, filename=os.path.basename(file_path))
+    # content_disposition_type="inline" (pas la valeur par défaut "attachment" dès qu'un
+    # `filename` est fourni) : le frontend rend maintenant les pages lui-même (voir
+    # CourseViewer.jsx, pdf.js) plutôt que de laisser le navigateur ouvrir le fichier, mais ce
+    # champ reste correct si jamais l'URL est atteinte directement (repli, vérif HEAD...).
+    return FileResponse(file_path, filename=os.path.basename(file_path), content_disposition_type="inline")
 
 @app.post("/api/summary")
 @limiter.limit(LLM_RATE_LIMIT)
@@ -602,6 +618,31 @@ def generate_exercise(request: Request, payload: ExerciseRequest, user=Depends(a
         raise
     except Exception as e:
         print(f"[ERROR] /api/exercise: {e}")
+        raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
+
+@app.post("/api/exercise/solution", response_model=ExerciseSolutionResponse)
+@limiter.limit(LLM_RATE_LIMIT)
+def get_exercise_solution(request: Request, payload: ExerciseSolutionRequest, user=Depends(auth.get_current_user_optional)):
+    """Correction détaillée d'un exercice déjà généré (voir generate_exercise_solution) —
+    appelée uniquement quand l'élève clique "Voir la solution détaillée", pas au moment de la
+    génération de l'énoncé. Ne persiste pas de message dédié : la correction reste "éphémère"
+    (regénérée si l'élève rouvre la conversation plus tard et redemande à la voir), l'exercice
+    lui-même (énoncé/indice/figure) restant persisté normalement par /api/exercise."""
+    _ensure_authenticated_user_ready(user)
+    try:
+        class_level = _resolve_class_level(user, payload.class_level)
+        if class_level not in get_classes():
+            raise HTTPException(status_code=400, detail="Invalid class level")
+
+        result = rag_system.generate_exercise_solution(
+            class_level, payload.chapter, payload.difficulty,
+            payload.enonce, indices=payload.indices, figure=payload.figure,
+        )
+        return ExerciseSolutionResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] /api/exercise/solution: {e}")
         raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
 
 ALLOWED_PHOTO_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf"}

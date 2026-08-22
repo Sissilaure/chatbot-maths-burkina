@@ -122,12 +122,14 @@ function mapSources(sources, classCode, chapter) {
  * @param {string} chapter
  * @param {Array<{role: 'user'|'assistant', content: string}>} history
  * @param {string|null} conversationId
- * @param {{onDelta?: (text: string) => void, onDone?: (result: {sources: object[], fromRag: boolean}) => void, onError?: (err: Error) => void}} callbacks
+ * @param {{onDelta?: (text: string) => void, onDone?: (result: {sources: object[], fromRag: boolean}) => void, onError?: (err: Error) => void, onAbort?: () => void, signal?: AbortSignal}} callbacks
  *   `err` passé à onError porte `.status` et, pour un 428, `.reason` ("consent_required" |
- *   "profile_incomplete") — voir apiError() ci-dessus.
+ *   "profile_incomplete") — voir apiError() ci-dessus. `signal` (bouton stop, voir ChatInput.jsx) :
+ *   un abort en cours de flux appelle `onAbort` (le texte déjà reçu via onDelta reste affiché tel
+ *   quel, ce n'est pas une vraie erreur) plutôt que `onError`.
  */
 export async function askQuestionStream(
-  question, classCode, chapter, history = [], conversationId = null, { onDelta, onDone, onError } = {}
+  question, classCode, chapter, history = [], conversationId = null, { onDelta, onDone, onError, onAbort, signal } = {}
 ) {
   try {
     const res = await fetch(`${API_BASE}/api/chat/stream`, {
@@ -140,6 +142,7 @@ export async function askQuestionStream(
         history,
         conversation_id: conversationId,
       }),
+      signal,
     })
 
     if (!res.ok || !res.body) {
@@ -190,11 +193,15 @@ export async function askQuestionStream(
 
     onDone?.({ sources: mapSources(sources, classCode, chapter), fromRag })
   } catch (err) {
+    if (err?.name === "AbortError") {
+      onAbort?.()
+      return
+    }
     onError?.(err)
   }
 }
 
-export async function simplifyResponse(question, previousResponse, classCode, chapter, conversationId = null) {
+export async function simplifyResponse(question, previousResponse, classCode, chapter, conversationId = null, signal) {
   const res = await fetch(`${API_BASE}/api/simplify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -205,6 +212,7 @@ export async function simplifyResponse(question, previousResponse, classCode, ch
       chapter,
       conversation_id: conversationId,
     }),
+    signal,
   })
   const data = await handleJson(res, "Erreur lors de la simplification")
   return data.simplified_answer
@@ -220,13 +228,30 @@ export async function simplifyResponse(question, previousResponse, classCode, ch
  * @param {Array<{role: 'user'|'assistant', content: string}>} history
  * @param {string|null} conversationId
  */
-export async function generateExercise(classCode, chapter, difficulty = null, history = [], conversationId = null) {
+export async function generateExercise(classCode, chapter, difficulty = null, history = [], conversationId = null, signal) {
   const res = await fetch(`${API_BASE}/api/exercise`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ class_level: classCode, chapter, difficulty, history, conversation_id: conversationId }),
+    signal,
   })
   return handleJson(res, "Erreur lors de la génération de l'exercice")
+}
+
+/**
+ * Correction détaillée d'un exercice déjà généré (voir ExerciseCard.jsx : appelée seulement au
+ * clic sur "Voir la solution détaillée", pas au moment de la génération de l'énoncé — un exercice
+ * de Terminale avec correction complète en une seule fois pouvait dépasser le budget de tokens
+ * partagé entre énoncé et solution, faisant échouer la génération. `enonce`/`indices`/`figure`
+ * sont ceux de l'exercice déjà affiché, pour que la correction porte bien sur CE même énoncé.
+ */
+export async function generateExerciseSolution(classCode, chapter, difficulty, enonce, indices = [], figure = null) {
+  const res = await fetch(`${API_BASE}/api/exercise/solution`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ class_level: classCode, chapter, difficulty, enonce, indices, figure }),
+  })
+  return handleJson(res, "Erreur lors de la génération de la correction")
 }
 
 /**
@@ -239,7 +264,7 @@ export async function generateExercise(classCode, chapter, difficulty = null, hi
  * `conversationId` (facultatif) : persistance serveur, envoyée en champ de formulaire.
  * Envoyés en champs de formulaire (pas en query string, qui a une limite de taille).
  */
-export async function explainExercisePhoto(file, classCode = "", chapter = "", prompt = "", history = [], conversationId = null) {
+export async function explainExercisePhoto(file, classCode = "", chapter = "", prompt = "", history = [], conversationId = null, signal) {
   const params = new URLSearchParams()
   if (classCode) params.set("class_level", classCode)
   if (chapter) params.set("chapter", chapter)
@@ -253,6 +278,7 @@ export async function explainExercisePhoto(file, classCode = "", chapter = "", p
   const res = await fetch(`${API_BASE}/api/exercise/photo?${params.toString()}`, {
     method: "POST",
     body: formData,
+    signal,
   })
   const data = await handleJson(res, "Erreur lors de l'analyse de la photo")
   return data.answer
@@ -261,11 +287,12 @@ export async function explainExercisePhoto(file, classCode = "", chapter = "", p
 /**
  * QCM diagnostique de prérequis (8 questions) sur le chapitre choisi.
  */
-export async function generatePrerequis(classCode, chapter, history = [], conversationId = null) {
+export async function generatePrerequis(classCode, chapter, history = [], conversationId = null, signal) {
   const res = await fetch(`${API_BASE}/api/prerequis`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ class_level: classCode, chapter, history, conversation_id: conversationId }),
+    signal,
   })
   return handleJson(res, "Erreur lors de la génération du QCM de prérequis")
 }
@@ -296,11 +323,12 @@ export async function checkCourseAvailable(classCode, chapter) {
  * Résumé des points essentiels : de la séance en cours si des échanges existent,
  * sinon du chapitre choisi.
  */
-export async function getSummary(history, classCode, chapter, conversationId = null) {
+export async function getSummary(history, classCode, chapter, conversationId = null, signal) {
   const res = await fetch(`${API_BASE}/api/summary`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ history, class_level: classCode, chapter, conversation_id: conversationId }),
+    signal,
   })
   const data = await handleJson(res, "Erreur lors de la génération du résumé")
   return data.content

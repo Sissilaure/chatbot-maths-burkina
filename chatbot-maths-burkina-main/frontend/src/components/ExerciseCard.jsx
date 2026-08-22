@@ -1,6 +1,6 @@
 import React, { useState } from "react"
 import { motion } from "framer-motion"
-import { PencilRuler, Lightbulb, Eye, EyeOff, Sparkles, Star, ArrowRight } from "lucide-react"
+import { PencilRuler, Lightbulb, Eye, EyeOff, Sparkles, Star, ArrowRight, Loader2 } from "lucide-react"
 import Card from "./ui/Card"
 import Button from "./ui/Button"
 import Badge from "./ui/Badge"
@@ -38,10 +38,20 @@ function StarRating({ level }) {
   )
 }
 
-export default function ExerciseCard({ exercise, onNext, generatingNext }) {
+export default function ExerciseCard({ exercise, onNext, generatingNext, onFetchSolution }) {
   const [indiceShown, setIndiceShown] = useState(false)
   const [solutionShown, setSolutionShown] = useState(false)
   const [qcmAnswers, setQcmAnswers] = useState({})
+  // La correction n'est plus incluse dans l'exercice généré (voir generate_exercise_solution
+  // côté backend) : récupérée à la demande, au premier clic sur "Voir la solution détaillée"
+  // seulement, puis gardée en mémoire ici pour ne pas la redemander à chaque bascule d'affichage.
+  const [fetchedSolution, setFetchedSolution] = useState(null)
+  const [solutionLoading, setSolutionLoading] = useState(false)
+  const [solutionError, setSolutionError] = useState(false)
+
+  const solution = fetchedSolution?.solution ?? exercise.solution
+  const reponseFinale = fetchedSolution?.reponse_finale ?? exercise.reponse_finale
+  const hasSolution = Boolean(solution)
 
   const isQcm = Array.isArray(exercise.qcm) && exercise.qcm.length > 0
   const allAnswered = isQcm && exercise.qcm.every((_, i) => qcmAnswers[i] !== undefined)
@@ -108,23 +118,56 @@ export default function ExerciseCard({ exercise, onNext, generatingNext }) {
             )}
 
             <div className="mt-4">
-              <Button variant={solutionShown ? "outline" : "primary"} size="sm" onClick={() => setSolutionShown((s) => !s)}>
-                {solutionShown ? <EyeOff size={14} /> : <Eye size={14} />}
-                {solutionShown ? "Masquer la solution" : "Voir la solution détaillée"}
+              <Button
+                variant={solutionShown ? "outline" : "primary"}
+                size="sm"
+                disabled={solutionLoading}
+                onClick={async () => {
+                  if (solutionShown) {
+                    setSolutionShown(false)
+                    return
+                  }
+                  setSolutionShown(true)
+                  if (hasSolution || solutionLoading) return
+                  setSolutionLoading(true)
+                  setSolutionError(false)
+                  try {
+                    const result = await onFetchSolution(exercise)
+                    setFetchedSolution(result)
+                  } catch {
+                    setSolutionError(true)
+                  }
+                  setSolutionLoading(false)
+                }}
+              >
+                {solutionLoading ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : solutionShown ? (
+                  <EyeOff size={14} />
+                ) : (
+                  <Eye size={14} />
+                )}
+                {solutionLoading ? "Génération de la correction…" : solutionShown ? "Masquer la solution" : "Voir la solution détaillée"}
               </Button>
 
-              {solutionShown && (
+              {solutionShown && !solutionLoading && (
                 <motion.div
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   className="prose-chat mt-3 max-w-none space-y-2 overflow-hidden rounded-xl border border-success/30 bg-success/5 p-4"
                 >
-                  <MathContent>{exercise.solution}</MathContent>
-                  {exercise.reponse_finale && (
-                    <div className="mt-2 flex items-center gap-2 rounded-lg bg-success/15 px-3 py-2 font-semibold text-success">
-                      <Sparkles size={14} />
-                      <MathContent>{exercise.reponse_finale}</MathContent>
-                    </div>
+                  {solutionError ? (
+                    <p className="text-error">Impossible de générer la correction pour le moment. Réessaie.</p>
+                  ) : (
+                    <>
+                      <MathContent>{solution}</MathContent>
+                      {reponseFinale && (
+                        <div className="mt-2 flex items-center gap-2 rounded-lg bg-success/15 px-3 py-2 font-semibold text-success">
+                          <Sparkles size={14} />
+                          <MathContent>{reponseFinale}</MathContent>
+                        </div>
+                      )}
+                    </>
                   )}
                 </motion.div>
               )}

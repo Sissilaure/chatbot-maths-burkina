@@ -1326,22 +1326,21 @@ CONTRAINTES :
 - Niveau de difficulté : {difficulty_label}{olympiad_instructions}
 - Contexte réaliste et local burkinabè (marché, agriculture, élevage, artisanat, construction, transport en commun...)
 - Fournis exactement 1 indice qui guide SANS donner le résultat.
-- La solution doit être détaillée étape par étape, avec les formules en LaTeX (`$...$` ou `$$...$$`) : tout symbole \
-mathématique (∞, ∈, ≤, →...) en LaTeX (`\\infty`, `\\in`...), jamais épelé en toutes lettres (écris $+\\infty$, \
-jamais « + infini »).
-- Mets la réponse finale bien en évidence, séparément.
+- NE RÉDIGE PAS de solution ni de réponse finale ici — uniquement l'énoncé et l'indice (la correction est générée \
+séparément, à la demande de l'élève, voir generate_exercise_solution). Formule quand même l'énoncé de façon \
+suffisamment précise et autonome pour qu'une solution complète et non ambiguë puisse en être déduite plus tard.
 - OBLIGATOIRE si l'exercice implique une figure géométrique, même indirectement (triangle, champ/terrain rectangulaire, \
 cercle, angle, repère, configuration de Thalès/Pythagore, solide...) : remplis le champ "figure" avec le schéma \
 correspondant. Sinon mets "figure" à null. N'essaie JAMAIS de représenter une figure avec des caractères ASCII \
-(`|`, `/`, `\\`, `-`) dans "enonce" ou "solution" : uniquement le champ "figure" prévu à cet effet (ce champ est \
-un mécanisme différent des blocs ```figure``` du chat : ici toujours un objet JSON dédié, jamais du texte).
+(`|`, `/`, `\\`, `-`) dans "enonce" : uniquement le champ "figure" prévu à cet effet (ce champ est un mécanisme \
+différent des blocs ```figure``` du chat : ici toujours un objet JSON dédié, jamais du texte).
+{MATH_FORMAT_INSTRUCTIONS}
 
 {NO_EMOJI_INSTRUCTIONS}
 
 FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code), \
 exactement sous cette forme :
-{{"chapitre": "{chapter if chapter else '...'}", "enonce": "...", "indices": ["..."], "solution": "...", \
-"reponse_finale": "...", "figure": null}}
+{{"chapitre": "{chapter if chapter else '...'}", "enonce": "...", "indices": ["..."], "figure": null}}
 
 Si présente, la "figure" doit être un OBJET JSON (pas une chaîne de caractères échappée) suivant exactement ce schéma :
 {{"points": [{{"id": "A", "x": 0, "y": 0}}, ...], "segments": [{{"from": "A", "to": "B"}}, ...], \
@@ -1378,6 +1377,103 @@ qu'il annote (jamais pile sur un segment ni à l'intérieur d'un polygone rempli
 
         print("[WARN] Claude indisponible ou reponse non structuree pour l'exercice, fallback local...")
         return self._local_generate_exercise(class_level, chapter or self._default_chapter(class_level), difficulty)
+
+    @staticmethod
+    def _figure_as_text(figure: Optional[dict]) -> str:
+        """Résumé textuel compact d'une figure déjà générée (voir generate_exercise), pour que
+        generate_exercise_solution puisse s'y référer sans avoir à la regénérer ni à la deviner."""
+        if not figure:
+            return ""
+        points = ", ".join(f"{p.get('id')}({p.get('x')},{p.get('y')})" for p in figure.get("points") or [])
+        parts = [f"points {points}"] if points else []
+        if figure.get("segments"):
+            parts.append("segments " + ", ".join(f"[{s.get('from')}{s.get('to')}]" for s in figure["segments"]))
+        if figure.get("circles"):
+            parts.append("cercle(s) " + ", ".join(f"centre {c.get('center')} rayon {c.get('radius')}" for c in figure["circles"]))
+        if figure.get("labels"):
+            parts.append("annotations " + ", ".join(f'"{l.get("text")}"' for l in figure["labels"]))
+        return "Figure de l'énoncé (coordonnées abstraites, pour information) : " + " ; ".join(parts) if parts else ""
+
+    def generate_exercise_solution(self, class_level: str, chapter: str, difficulty: int,
+                                    enonce: str, indices: Optional[list] = None,
+                                    figure: Optional[dict] = None) -> dict:
+        """Génère la correction (solution détaillée + réponse finale) d'un exercice DÉJÀ généré
+        par generate_exercise, à la demande de l'élève (bouton "Voir la solution détaillée" côté
+        frontend) — séparé de la génération de l'énoncé pour deux raisons : (1) la plupart des
+        élèves qui génèrent un exercice ne demandent pas forcément la correction tout de suite,
+        générer les deux d'un coup était donc souvent du travail perdu ; (2) réunir énoncé ET
+        solution détaillée dans le même appel forçait à partager un seul budget de tokens entre
+        les deux — sur un exercice de Terminale (raisonnement long, rédaction dense), la part
+        "solution" pouvait à elle seule dépasser ce budget partagé, tronquant la réponse JSON et
+        déclenchant un repli silencieux vers un exercice générique (symptôme observé : "l'exercice
+        ne vient pas vraiment" en Terminale). Ici la solution a son propre budget dédié, donc plus
+        de contention avec l'énoncé."""
+        difficulty_label = STAR_DIFFICULTY_LABELS.get(difficulty, STAR_DIFFICULTY_LABELS[2])
+        indice_txt = f"\nIndice déjà donné à l'élève : {indices[0]}" if indices else ""
+        figure_txt = self._figure_as_text(figure)
+
+        system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. Un élève de \
+{class_level} a déjà reçu l'énoncé suivant (chapitre « {chapter} », niveau {difficulty_label}) et souhaite \
+maintenant en voir la correction détaillée.
+
+ÉNONCÉ DÉJÀ DONNÉ À L'ÉLÈVE (ne le répète pas, résous-le directement) :
+{enonce}
+{indice_txt}
+{f"{chr(10)}{figure_txt}" if figure_txt else ""}
+
+CONTRAINTES :
+- Rédige une solution détaillée, étape par étape, cohérente avec CET énoncé précis (pas un autre).
+- Mets la réponse finale bien en évidence, séparément.
+{MATH_FORMAT_INSTRUCTIONS}
+
+{NO_EMOJI_INSTRUCTIONS}
+
+FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code) :
+{{"solution": "...", "reponse_finale": "..."}}
+"""
+        user_message = "Rédige la correction détaillée de cet exercice."
+
+        max_tokens = config.MAX_TOKENS_EXERCISE_OLYMPIAD if difficulty == 5 else config.MAX_TOKENS_EXERCISE
+        response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}], max_tokens=max_tokens)
+
+        if response:
+            parsed = self._parse_exercise_solution_json(response)
+            if parsed:
+                return parsed
+            print(f"[WARN] JSON de correction non parsable ({len(response)} caracteres) : "
+                  f"debut={response[:150]!r} fin={response[-150:]!r}")
+        else:
+            print("[WARN] _call_claude a renvoye une reponse vide pour la correction.")
+
+        return {
+            "solution": "Le service est momentanément indisponible : reviens plus tard pour voir la correction.",
+            "reponse_finale": "",
+        }
+
+    @staticmethod
+    def _parse_exercise_solution_json(raw_text: str) -> Optional[dict]:
+        text = raw_text.strip()
+        text = re.sub(r"^```(json)?", "", text.strip(), flags=re.IGNORECASE).strip()
+        text = re.sub(r"```$", "", text.strip()).strip()
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        candidate = text[start:end + 1]
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                data = json.loads(_repair_latex_json_escapes(candidate))
+            except json.JSONDecodeError:
+                return None
+
+        solution = str(data.get("solution", "")).strip()
+        if not solution:
+            return None
+        return {"solution": solution, "reponse_finale": str(data.get("reponse_finale", "")).strip()}
 
     @staticmethod
     def _parse_exercise_json(raw_text: str, difficulty: int = 2):
@@ -1439,10 +1535,6 @@ qu'il annote (jamais pile sur un segment ni à l'intérieur d'un polygone rempli
             return {"enonce": enonce, "indices": [], "solution": "", "reponse_finale": "", "figure": None,
                     "qcm": qcm}, claude_chapter
 
-        solution = str(data.get("solution", "")).strip()
-        if not solution:
-            return None, None
-
         indices = data.get("indices", [])
         if not isinstance(indices, list):
             indices = [str(indices)]
@@ -1451,10 +1543,15 @@ qu'il annote (jamais pile sur un segment ni à l'intérieur d'un polygone rempli
         if not isinstance(figure, dict) or not isinstance(figure.get("points"), list) or not figure.get("points"):
             figure = None
 
+        # La solution est désormais générée séparément, à la demande (voir
+        # generate_exercise_solution) : on ne l'exige plus ici (c'était la cause du bug
+        # Terminale, la réponse combinée dépassant parfois le budget de tokens et laissant
+        # "solution" vide, ce qui faisait rejeter tout l'exercice). On la récupère quand même
+        # si le modèle en a fourni une, pour rester tolérant aux anciennes réponses.
         return {
             "enonce": enonce,
             "indices": [str(i) for i in indices][:1],
-            "solution": solution,
+            "solution": str(data.get("solution", "")).strip(),
             "reponse_finale": str(data.get("reponse_finale", "")).strip(),
             "figure": figure,
             "qcm": None
