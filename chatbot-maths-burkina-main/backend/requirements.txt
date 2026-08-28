@@ -26,7 +26,10 @@ pypdf
 python-docx==1.1.0
 
 # LLM
-anthropic>=0.116.0
+# Borne haute volontaire : la 1.x a retiré `temperature` de create()/stream() (voir
+# rag_system.py::_create_message) sans que la borne précédente (>=0.116.0, sans plafond) ne nous
+# protège d'un futur changement cassant équivalent à la prochaine montée de version majeure.
+anthropic>=1.2.0,<2.0.0
 
 # Comptes élèves (auth)
 bcrypt>=4.1.0

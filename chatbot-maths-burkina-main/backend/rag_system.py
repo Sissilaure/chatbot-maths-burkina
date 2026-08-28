@@ -131,6 +131,10 @@ class RAGSystem:
         self.anthropic_api_key = config.ANTHROPIC_API_KEY
         self.anthropic_model = config.ANTHROPIC_MODEL
         self.anthropic_client = None
+        # `claude-sonnet-5` rejette `temperature` ("deprecated for this model") — détecté au premier
+        # appel (voir _create_message/_stream_claude) puis mémorisé ici pour éviter de retenter à
+        # chaque appel un paramètre qu'on sait déjà refusé par le modèle configuré.
+        self._temperature_supported = True
         if self.anthropic_api_key:
             try:
                 self.anthropic_client = anthropic.Anthropic(api_key=self.anthropic_api_key)
@@ -286,23 +290,30 @@ class RAGSystem:
 
     def _create_message(self, system_prompt: str, messages: list, max_tokens: int, temperature: float,
                          tools: list = None):
-        """Un seul appel bas niveau à l'API Messages, avec repli si le modèle rejette `temperature`."""
+        """Un seul appel bas niveau à l'API Messages, avec repli si le modèle rejette `temperature`.
+
+        `temperature` passe par `extra_body` plutôt qu'en paramètre nommé direct : le SDK anthropic
+        (>=1.x) a retiré `temperature` de la signature typée de `create()`/`stream()`, ce qui lève un
+        TypeError côté client avant même la requête HTTP — `extra_body` la transmet telle quelle à
+        l'API, qui répond alors par un vrai BadRequestError si le modèle la refuse, rattrapable ici."""
         kwargs = {
             "model": self.anthropic_model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "system": system_prompt,
             "messages": messages,
         }
         if tools:
             kwargs["tools"] = tools
+        if self._temperature_supported:
+            kwargs["extra_body"] = {"temperature": temperature}
         try:
             return self.anthropic_client.messages.create(**kwargs)
         except anthropic.BadRequestError as e:
             # Certains modèles récents (ex: reasoning models) rejettent un temperature
             # personnalisé. On retente sans ce paramètre plutôt que de tout faire échouer.
             if "temperature" in str(e).lower():
-                kwargs.pop("temperature")
+                self._temperature_supported = False
+                kwargs.pop("extra_body", None)
                 return self.anthropic_client.messages.create(**kwargs)
             raise
 
@@ -380,20 +391,23 @@ class RAGSystem:
 
             # `messages.stream(...)` ne fait la requête HTTP qu'à l'entrée du context manager
             # (__enter__), donc le repli "sans temperature" doit être tenté à ce moment-là,
-            # pas au moment de la simple construction de l'objet stream.
-            stream_ctx = self.anthropic_client.messages.stream(
-                model=self.anthropic_model, max_tokens=max_tokens, temperature=temp,
-                system=system_prompt, messages=current_messages
-            )
+            # pas au moment de la simple construction de l'objet stream. Voir _create_message pour
+            # pourquoi `temperature` passe par `extra_body` plutôt qu'en paramètre nommé direct.
+            stream_kwargs = {
+                "model": self.anthropic_model, "max_tokens": max_tokens,
+                "system": system_prompt, "messages": current_messages,
+            }
+            if self._temperature_supported:
+                stream_kwargs["extra_body"] = {"temperature": temp}
+            stream_ctx = self.anthropic_client.messages.stream(**stream_kwargs)
             try:
                 stream = stream_ctx.__enter__()
             except anthropic.BadRequestError as e:
                 if "temperature" not in str(e).lower():
                     raise
-                stream_ctx = self.anthropic_client.messages.stream(
-                    model=self.anthropic_model, max_tokens=max_tokens,
-                    system=system_prompt, messages=current_messages
-                )
+                self._temperature_supported = False
+                stream_kwargs.pop("extra_body", None)
+                stream_ctx = self.anthropic_client.messages.stream(**stream_kwargs)
                 stream = stream_ctx.__enter__()
 
             try:
