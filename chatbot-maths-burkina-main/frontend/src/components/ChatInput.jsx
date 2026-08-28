@@ -1,14 +1,63 @@
 import React, { useEffect, useRef, useState } from "react"
 import {
   SendHorizontal, Square, PencilRuler, BookOpen, ListChecks, ClipboardCheck, Camera, ImageOff,
-  MoreHorizontal, FileDown, FileText, Mic,
+  MoreHorizontal, FileDown, FileText, Mic, X, ArrowUp,
 } from "lucide-react"
 import Button from "./ui/Button"
 import ExportMenu from "./ExportMenu"
 import BottomSheet from "./ui/BottomSheet"
 import { useIsMobile } from "../lib/useMediaQuery"
 import { useSpeechRecognition } from "../lib/useSpeechRecognition"
+import { useMicLevels } from "../lib/useMicLevels"
 import { cn } from "../lib/utils"
+
+/** Bandeau plein écran affiché pendant la dictée (X annule, la forme d'onde reflète le niveau
+ * sonore réel du micro — voir useMicLevels.js — le carré arrête et garde le texte transcrit, la
+ * flèche arrête ET envoie directement). Remplace toute la ligne de saisie normale pendant l'écoute,
+ * comme dans Claude/ChatGPT : on ne veut pas distraire l'élève avec d'autres boutons pendant qu'il
+ * dicte. */
+function RecordingBar({ levels, onCancel, onStop, onSend }) {
+  return (
+    <div className="flex h-11 flex-1 items-center gap-2 rounded-full border border-base-300 bg-base-100 pl-1.5 pr-1.5">
+      <button
+        type="button"
+        onClick={onCancel}
+        title="Annuler la dictée"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-base-content/60 transition-colors hover:bg-base-200"
+      >
+        <X size={18} />
+      </button>
+
+      <div className="flex h-full flex-1 items-center justify-center gap-[3px] overflow-hidden" aria-hidden="true">
+        {levels.map((level, i) => (
+          <span
+            key={i}
+            className="w-[3px] shrink-0 rounded-full bg-base-content/35 transition-[height] duration-75"
+            style={{ height: `${4 + level * 22}px` }}
+          />
+        ))}
+      </div>
+
+      <button
+        type="button"
+        onClick={onStop}
+        title="Arrêter la dictée (garder le texte)"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-base-300 text-base-content transition-colors hover:bg-base-200"
+      >
+        <Square size={13} className="fill-current" />
+      </button>
+
+      <button
+        type="button"
+        onClick={onSend}
+        title="Arrêter et envoyer"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-content transition-colors hover:brightness-110"
+      >
+        <ArrowUp size={18} />
+      </button>
+    </div>
+  )
+}
 
 // Hauteur automatique du textarea : une ligne au repos, jusqu'à 4 lignes maximum, pas de barre
 // de défilement visible avant cette limite (voir RAPPORT_MOBILE.md §6).
@@ -94,6 +143,26 @@ export default function ChatInput({
       }
     },
   })
+  const micLevels = useMicLevels(listening)
+  const textBeforeRecordingRef = useRef("")
+
+  function handleStartRecording() {
+    textBeforeRecordingRef.current = question
+    startListening(question)
+  }
+
+  function handleCancelRecording() {
+    stopListening()
+    setQuestion(textBeforeRecordingRef.current)
+  }
+
+  function handleSendWhileRecording() {
+    stopListening()
+    // `stop()` finalise l'audio déjà capté de façon asynchrone : un dernier `onresult` (le mot en
+    // cours) peut encore arriver juste après. Un court délai laisse le temps à ce dernier morceau
+    // d'atterrir dans `question` avant l'envoi, plutôt que de couper la phrase.
+    setTimeout(() => onSend(), 250)
+  }
 
   function handleKeyDown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -139,86 +208,98 @@ export default function ChatInput({
       )}
 
       <div className={cn("flex items-end", isMobile ? "gap-px" : "gap-2")}>
-        {isMobile && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setSheetOpen(true)}
-            title="Plus d'actions"
-            className="min-h-[44px] min-w-[44px] shrink-0"
-          >
-            <MoreHorizontal size={20} />
-          </Button>
-        )}
+        {listening ? (
+          <RecordingBar
+            levels={micLevels}
+            onCancel={handleCancelRecording}
+            onStop={stopListening}
+            onSend={handleSendWhileRecording}
+          />
+        ) : (
+          <>
+            {isMobile && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setSheetOpen(true)}
+                title="Plus d'actions"
+                className="min-h-[44px] min-w-[44px] shrink-0"
+              >
+                <MoreHorizontal size={20} />
+              </Button>
+            )}
 
-        <input
-          ref={photoInputRef}
-          type="file"
-          accept="image/*,application/pdf"
-          className="hidden"
-          onChange={handlePhotoChange}
-        />
-        {/* Bouton photo/fichier : visible en permanence à côté du champ sur mobile (voir
-            RAPPORT_MOBILE.md §5) ; sur bureau il reste dans la barre d'outils inchangée
-            ci-dessous, avec son libellé texte. */}
-        {isMobile && (
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => photoInputRef.current?.click()}
-            disabled={loading || photoLoading}
-            title="Prends en photo un exercice (ou choisis une photo/un fichier existant). Astuce : tape une consigne dans le champ ci-dessus avant de cliquer pour l'envoyer avec la photo."
-            className="min-h-[44px] min-w-[44px] shrink-0"
-          >
-            <Camera size={20} className={photoLoading ? "animate-pulse" : ""} />
-          </Button>
-        )}
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*,application/pdf"
+              className="hidden"
+              onChange={handlePhotoChange}
+            />
+            {/* Bouton photo/fichier : visible en permanence à côté du champ sur mobile (voir
+                RAPPORT_MOBILE.md §5) ; sur bureau il reste dans la barre d'outils inchangée
+                ci-dessous, avec son libellé texte. */}
+            {isMobile && (
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => photoInputRef.current?.click()}
+                disabled={loading || photoLoading}
+                title="Prends en photo un exercice (ou choisis une photo/un fichier existant). Astuce : tape une consigne dans le champ ci-dessus avant de cliquer pour l'envoyer avec la photo."
+                className="min-h-[44px] min-w-[44px] shrink-0"
+              >
+                <Camera size={20} className={photoLoading ? "animate-pulse" : ""} />
+              </Button>
+            )}
 
-        <textarea
-          ref={textareaRef}
-          className="textarea textarea-bordered w-full flex-1 resize-none rounded-xl bg-base-100 text-base leading-6"
-          rows={1}
-          placeholder="Pose ta question"
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={loading}
-        />
-        {voiceSupported && (
-          <Button
-            variant={listening ? "primary" : "outline"}
-            size={isMobile ? "icon" : "lg"}
-            onClick={() => (listening ? stopListening() : startListening(question))}
-            disabled={loading}
-            title={listening ? "Arrêter la dictée" : "Dicter ta question à voix haute"}
-            className={cn("min-h-[44px] min-w-[44px] shrink-0", listening && "animate-pulse")}
-          >
-            <Mic size={18} className={listening ? "fill-current" : ""} />
-          </Button>
+            <textarea
+              ref={textareaRef}
+              className="textarea textarea-bordered w-full flex-1 resize-none rounded-xl bg-base-100 text-base leading-6"
+              rows={1}
+              placeholder="Pose ta question"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={loading}
+            />
+            {voiceSupported && (
+              <Button
+                variant="outline"
+                size={isMobile ? "icon" : "lg"}
+                onClick={handleStartRecording}
+                disabled={loading}
+                title="Dicter ta question à voix haute"
+                className="min-h-[44px] min-w-[44px] shrink-0"
+              >
+                <Mic size={18} />
+              </Button>
+            )}
+            {/* Pendant une génération en cours (chat, exercice, prérequis, résumé — voir `loading`
+                dans App.jsx), ce même bouton devient "stop" plutôt que de rester un envoi désactivé :
+                l'élève n'a plus besoin d'attendre la fin d'une réponse longue pour passer à autre
+                chose (voir handleStop dans App.jsx, AbortController côté api.js). */}
+            <Button
+              variant={loading ? "outline" : "primary"}
+              // size="lg" (bureau) ajoute px-5 (20px de chaque côté) qui, cumulé avec min-w-[44px] ci-
+              // dessous, poussait ce bouton bien au-delà de 44px sur mobile (voir RAPPORT_MOBILE.md
+              // §2) : size="icon" y donne exactement 44×44 (padding p-2 + le min-w/min-h explicite).
+              size={isMobile ? "icon" : "lg"}
+              onClick={() => (loading ? onStop?.() : onSend())}
+              disabled={!loading && !question.trim()}
+              title={loading ? "Arrêter la génération" : "Envoyer"}
+              className="min-h-[44px] min-w-[44px] shrink-0"
+            >
+              {loading ? <Square size={16} className="fill-current" /> : <SendHorizontal size={18} />}
+            </Button>
+          </>
         )}
-        {/* Pendant une génération en cours (chat, exercice, prérequis, résumé — voir `loading`
-            dans App.jsx), ce même bouton devient "stop" plutôt que de rester un envoi désactivé :
-            l'élève n'a plus besoin d'attendre la fin d'une réponse longue pour passer à autre
-            chose (voir handleStop dans App.jsx, AbortController côté api.js). */}
-        <Button
-          variant={loading ? "outline" : "primary"}
-          // size="lg" (bureau) ajoute px-5 (20px de chaque côté) qui, cumulé avec min-w-[44px] ci-
-          // dessous, poussait ce bouton bien au-delà de 44px sur mobile (voir RAPPORT_MOBILE.md
-          // §2) : size="icon" y donne exactement 44×44 (padding p-2 + le min-w/min-h explicite).
-          size={isMobile ? "icon" : "lg"}
-          onClick={() => (loading ? onStop?.() : onSend())}
-          disabled={!loading && !question.trim()}
-          title={loading ? "Arrêter la génération" : "Envoyer"}
-          className="min-h-[44px] min-w-[44px] shrink-0"
-        >
-          {loading ? <Square size={16} className="fill-current" /> : <SendHorizontal size={18} />}
-        </Button>
       </div>
 
       {/* Bureau (>=768px) : barre d'outils inline inchangée, hors "Simplifie" (déplacé sous
           chaque réponse, voir MessageBubble.jsx). Mobile : ces actions vivent dans la feuille
-          "⋯" ouverte ci-dessus, voir plus bas. */}
-      <div className="mt-2 hidden flex-wrap items-center gap-2 md:flex">
+          "⋯" ouverte ci-dessus, voir plus bas. Masquée pendant la dictée (voir RecordingBar) pour
+          ne pas distraire l'élève avec d'autres actions pendant qu'il parle. */}
+      <div className={cn("mt-2 flex-wrap items-center gap-2", listening ? "hidden" : "hidden md:flex")}>
         <Button
           variant="outline"
           size="sm"
