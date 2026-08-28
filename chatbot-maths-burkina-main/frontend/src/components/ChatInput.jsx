@@ -309,7 +309,13 @@ export default function ChatInput({
         >
           <BookOpen size={14} /> Voir le cours
         </Button>
-        <Button variant="outline" size="sm" onClick={onSummary} disabled={loading} title="Points essentiels de la séance ou du chapitre">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onSummary}
+          disabled={!canChapterFeatures || loading}
+          title={!canChapterFeatures ? "Choisis une classe et un chapitre pour le résumé" : "Résumé prérédigé des points essentiels de ce chapitre (PDF téléchargeable)"}
+        >
           <ListChecks size={14} /> Résumé
         </Button>
         <Button
@@ -369,9 +375,10 @@ export default function ChatInput({
           />
           <SheetAction
             icon={ListChecks}
-            label="Résumé de la séance"
+            label="Résumé du chapitre"
+            hint={!canChapterFeatures ? "Choisis une classe et un chapitre" : "PDF téléchargeable des points essentiels"}
             onClick={() => runFromSheet(onSummary)}
-            disabled={loading}
+            disabled={!canChapterFeatures || loading}
           />
 
           <div className="my-2 border-t border-base-300/60" />

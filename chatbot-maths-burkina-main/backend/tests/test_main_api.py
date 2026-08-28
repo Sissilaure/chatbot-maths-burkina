@@ -62,6 +62,33 @@ def test_course_route_404_for_invalid_chapter():
     assert res.status_code == 404
 
 
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_summary_file_route_accepts_get_and_head(monkeypatch, tmp_path, method):
+    """Même régression HEAD que /api/course (voir plus haut) — /api/summary/file sert un PDF de
+    résumé prérédigé par l'équipe pédagogique, avec la même convention de dossiers que DATA_DIR
+    (voir find_course_file). Répertoire isolé (tmp_path) plutôt que data/summaries/ réel : le test
+    ne doit pas dépendre de fichiers effectivement déposés en prod."""
+    chapter_dir = tmp_path / "2nde" / "Vecteurs du plan"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "resume.pdf").write_bytes(b"%PDF-1.4 fake")
+    monkeypatch.setattr(main.config, "SUMMARIES_DIR", str(tmp_path))
+
+    res = client.request(method, "/api/summary/file/2nde/Vecteurs du plan")
+    assert res.status_code == 200
+    assert res.headers["content-disposition"].startswith("inline")
+
+
+def test_summary_file_route_404_for_missing_document(monkeypatch, tmp_path):
+    monkeypatch.setattr(main.config, "SUMMARIES_DIR", str(tmp_path))
+    res = client.head("/api/summary/file/4ème/Théorème de Pythagore")
+    assert res.status_code == 404
+
+
+def test_summary_file_route_404_for_invalid_chapter():
+    res = client.head("/api/summary/file/2nde/Chapitre-qui-n-existe-pas")
+    assert res.status_code == 404
+
+
 def test_exercise_rejects_invalid_class():
     res = client.post("/api/exercise", json={"class_level": "inexistante", "chapter": ""})
     assert res.status_code == 400
@@ -324,9 +351,11 @@ def test_class_level_is_forced_from_account_for_authenticated_student(unique_use
     assert captured["class_level"] == "6ème"
 
 
-def test_summary_and_simplify_are_gated_too(unique_username):
-    """La porte 428 couvre aussi /api/summary et /api/simplify (elles écrivent en base pour un
-    compte connecté, voir _persist_message_best_effort) — pas seulement chat/exercice/remédiation."""
+def test_simplify_is_gated_too(unique_username):
+    """La porte 428 couvre aussi /api/simplify (elle écrit en base pour un compte connecté, voir
+    _persist_message_best_effort) — pas seulement chat/exercice/remédiation. /api/summary/file
+    n'a plus cette porte à tester : depuis le passage à un PDF prérédigé, c'est un simple fichier
+    statique (comme /api/course), qui ne lit ni n'écrit aucune donnée élève."""
     import auth
     import database
 
@@ -337,13 +366,6 @@ def test_summary_and_simplify_are_gated_too(unique_username):
         school_name="École Test",
     )
     token = auth.create_token(user["id"], user["username"])
-
-    summary_res = client.post(
-        "/api/summary", json={"history": [], "class_level": "", "chapter": ""},
-        headers=_auth_headers(token),
-    )
-    assert summary_res.status_code == 428
-    assert summary_res.json()["detail"]["reason"] == "consent_required"
 
     simplify_res = client.post(
         "/api/simplify", json={"answer": "x", "class_level": "3ème", "question": "y", "chapter": ""},

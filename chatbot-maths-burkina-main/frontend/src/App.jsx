@@ -12,7 +12,8 @@ import {
   explainExercisePhoto,
   generatePrerequis,
   checkCourseAvailable,
-  getSummary,
+  checkSummaryFileAvailable,
+  getSummaryFileUrl,
   listConversations,
   createConversation,
   getConversation,
@@ -865,21 +866,17 @@ export default function App() {
   }
 
   async function handleSummary() {
-    if (loading || streaming) return
-    setLoading(true)
-    const controller = new AbortController()
-    abortControllerRef.current = controller
-    try {
-      const history = buildHistoryUpTo(messages)
-      const convId = await ensureConversation().catch(() => null)
-      const content = await getSummary(history, classCode, chapitre, convId, controller.signal)
-      pushBotMessage(content, [], "summary")
-    } catch (err) {
-      if (err?.name !== "AbortError" && !interceptGateError(err)) {
-        pushBotError("Impossible de générer le résumé pour le moment.")
-      }
+    // Résumé prérédigé par l'équipe pédagogique (PDF par chapitre, voir data/summaries/ côté
+    // backend) plutôt que généré par Claude : même schéma que handleCourse, mais sans visualiseur
+    // maison — contrairement au cours complet, l'élève doit pouvoir télécharger ce résumé s'il le
+    // souhaite, donc on laisse le navigateur ouvrir l'onglet normalement (voir getSummaryFileUrl).
+    if (!classCode || !chapitre || loading || streaming) return
+    const available = await checkSummaryFileAvailable(classCode, chapitre)
+    if (!available) {
+      showToast("Résumé non disponible pour ce chapitre pour le moment.", "error")
+      return
     }
-    setLoading(false)
+    window.open(getSummaryFileUrl(classCode, chapitre), "_blank", "noopener,noreferrer")
   }
 
   function handleReset() {

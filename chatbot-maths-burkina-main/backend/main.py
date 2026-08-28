@@ -167,12 +167,6 @@ class PrerequisRequest(BaseModel):
 
 RemediationRequest = PrerequisRequest
 
-class SummaryRequest(BaseModel):
-    history: List[HistoryTurn] = []
-    class_level: str = ""
-    chapter: str = ""
-    conversation_id: Optional[str] = None
-
 class ChatResponse(BaseModel):
     answer: str
     sources: List[dict]
@@ -551,35 +545,28 @@ def get_course_file(class_code: str, chapter: str):
     # champ reste correct si jamais l'URL est atteinte directement (repli, vérif HEAD...).
     return FileResponse(file_path, filename=os.path.basename(file_path), content_disposition_type="inline")
 
-@app.post("/api/summary")
-@limiter.limit(LLM_RATE_LIMIT)
-def get_summary(request: Request, payload: SummaryRequest, user=Depends(auth.get_current_user_optional)):
-    """Résumé des points essentiels : de la séance en cours si une conversation existe,
-    sinon du chapitre choisi."""
-    _ensure_authenticated_user_ready(user)
-    try:
-        class_level = _resolve_class_level(user, payload.class_level)
-        chapter = payload.chapter.strip()
+@app.api_route("/api/summary/file/{class_code}/{chapter}", methods=["GET", "HEAD"])
+def get_summary_file(class_code: str, chapter: str):
+    """Renvoie le PDF de résumé déposé pour cette classe/ce chapitre (voir data/summaries/,
+    même convention que data/documents/ pour les cours — voir find_course_file). Remplace
+    l'ancien résumé généré par Claude : l'équipe pédagogique fournit désormais un résumé
+    prérédigé par chapitre. Pas de porte consentement ici, comme /api/course : aucune donnée
+    élève n'est lue ni écrite, juste un fichier statique renvoyé tel quel."""
+    if class_code not in get_classes():
+        raise HTTPException(status_code=404, detail="Class not found")
+    if chapter not in get_chapters(class_code):
+        raise HTTPException(status_code=404, detail="Chapter not found")
 
-        if class_level and class_level not in get_classes():
-            raise HTTPException(status_code=400, detail="Invalid class level")
-        if chapter and class_level and chapter not in get_chapters(class_level):
-            raise HTTPException(status_code=400, detail="Invalid chapter for this class")
+    file_path = find_course_file(config.SUMMARIES_DIR, class_code, chapter)
+    if not file_path:
+        raise HTTPException(status_code=404, detail="Aucun résumé disponible pour ce chapitre")
 
-        history = [turn.dict() for turn in payload.history]
-        content = rag_system.generate_summary(history, class_level, chapter)
-
-        _persist_message_best_effort(
-            user, payload.conversation_id, "assistant", content,
-            kind="summary", class_code=class_level or None, chapter=chapter or None,
-        )
-
-        return {"content": content}
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[ERROR] /api/summary: {e}")
-        raise HTTPException(status_code=500, detail="Une erreur interne est survenue, réessaie.")
+    # Pas de content_disposition_type="inline" forcé ici comme pour /api/course : contrairement
+    # au cours complet, l'élève doit pouvoir télécharger ce résumé s'il le souhaite. "inline"
+    # laisse quand même le navigateur l'ouvrir directement dans un nouvel onglet (visualiseur PDF
+    # natif, qui expose lui-même un bouton de téléchargement) plutôt que de forcer un
+    # téléchargement immédiat et systématique au moindre clic sur "Résumé".
+    return FileResponse(file_path, filename=os.path.basename(file_path), content_disposition_type="inline")
 
 @app.post("/api/exercise", response_model=ExerciseResponse)
 @limiter.limit(LLM_RATE_LIMIT)

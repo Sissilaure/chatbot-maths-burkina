@@ -320,18 +320,26 @@ export async function checkCourseAvailable(classCode, chapter) {
 }
 
 /**
- * Résumé des points essentiels : de la séance en cours si des échanges existent,
- * sinon du chapitre choisi.
+ * URL du PDF de résumé prérédigé pour ce chapitre (fourni par l'équipe pédagogique, voir
+ * data/summaries/ côté backend), à ouvrir directement — pas de fetch ici : voir
+ * checkSummaryFileAvailable pour vérifier sa disponibilité avant ouverture. Contrairement au
+ * cours complet (CourseViewer.jsx), pas de visualiseur maison : l'élève doit pouvoir télécharger
+ * ce résumé s'il le souhaite, donc on laisse le navigateur gérer l'onglet normalement.
  */
-export async function getSummary(history, classCode, chapter, conversationId = null, signal) {
-  const res = await fetch(`${API_BASE}/api/summary`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ history, class_level: classCode, chapter, conversation_id: conversationId }),
-    signal,
-  })
-  const data = await handleJson(res, "Erreur lors de la génération du résumé")
-  return data.content
+export function getSummaryFileUrl(classCode, chapter) {
+  return `${API_BASE}/api/summary/file/${encodeURIComponent(classCode)}/${encodeURIComponent(chapter)}`
+}
+
+/**
+ * Vérifie que le PDF de résumé existe avant d'ouvrir un nouvel onglet dessus.
+ */
+export async function checkSummaryFileAvailable(classCode, chapter) {
+  try {
+    const res = await fetch(getSummaryFileUrl(classCode, chapter), { method: "HEAD" })
+    return res.ok
+  } catch {
+    return false
+  }
 }
 
 // ---------------------------------------------------------------------------

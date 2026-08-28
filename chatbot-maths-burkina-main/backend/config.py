@@ -34,7 +34,6 @@ class Config:
     MAX_TOKENS_SIMPLIFY = int(os.getenv("MAX_TOKENS_SIMPLIFY", "1500"))
     MAX_TOKENS_BASICS = int(os.getenv("MAX_TOKENS_BASICS", "2000"))
     MAX_TOKENS_REMEDIATION = int(os.getenv("MAX_TOKENS_REMEDIATION", "6144"))
-    MAX_TOKENS_SUMMARY = int(os.getenv("MAX_TOKENS_SUMMARY", "1200"))
     MAX_TOKENS_EXERCISE_PHOTO = int(os.getenv("MAX_TOKENS_EXERCISE_PHOTO", "3000"))
     # Photo d'exercice envoyée par l'élève : au-delà, on refuse plutôt que de laisser l'upload
     # traîner (mobile en 3G) ou de gonfler inutilement le payload envoyé à l'API Claude.
@@ -90,5 +89,11 @@ class Config:
 
     # Data Directory
     DATA_DIR = os.getenv("DATA_DIR", "./data/documents")
+
+    # PDF de résumé par chapitre (voir /api/summary/file, même convention de dossiers que
+    # DATA_DIR : <classe>/<chapitre>/fichier.pdf), fournis par l'équipe pédagogique — distinct
+    # de DATA_DIR pour ne jamais les faire remonter dans le RAG (ce sont des résumés à
+    # télécharger, pas des extraits à retrouver par similarité).
+    SUMMARIES_DIR = os.getenv("SUMMARIES_DIR", "./data/summaries")
 
 config = Config()
