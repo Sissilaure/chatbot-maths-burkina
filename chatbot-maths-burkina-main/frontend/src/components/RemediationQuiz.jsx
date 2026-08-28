@@ -77,7 +77,7 @@ export default function RemediationQuiz({ data, onSubmitResults }) {
       <Card glow className="p-5">
         <div className="mb-3 flex items-center gap-2 text-primary">
           <ClipboardCheck size={18} />
-          <span className="font-heading font-semibold">Prérequis — {data.chapter}</span>
+          <span className="font-heading font-semibold">Prérequis : {data.chapter}</span>
         </div>
         <p className="mb-4 text-sm text-base-content/60">
           Avant de commencer ce chapitre, relis chaque rappel puis réponds à l'exercice qui suit pour vérifier que tu maîtrises encore la notion.

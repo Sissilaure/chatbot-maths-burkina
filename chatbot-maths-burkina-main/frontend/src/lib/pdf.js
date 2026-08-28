@@ -216,7 +216,7 @@ export async function exportNodeToPDF(node, { filename = "chatmaths.pdf", title 
   for (let i = 1; i <= pageCount; i++) {
     pdf.setPage(i)
     pdf.text(
-      `Prof Amira — page ${i}/${pageCount}`,
+      `Prof Amira, page ${i}/${pageCount}`,
       margin,
       pageHeight - 16
     )

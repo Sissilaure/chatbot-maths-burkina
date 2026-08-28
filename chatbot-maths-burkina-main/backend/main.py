@@ -508,7 +508,7 @@ def get_prerequis(request: Request, payload: PrerequisRequest, user=Depends(auth
 
         _persist_message_best_effort(
             user, payload.conversation_id, "assistant",
-            f"QCM de prérequis — {chapter}",
+            f"QCM de prérequis : {chapter}",
             kind="prerequis", payload={"chapter": chapter, "class_level": class_level, "questions": questions},
             class_code=class_level, chapter=chapter,
         )
@@ -607,7 +607,7 @@ def generate_exercise(request: Request, payload: ExerciseRequest, user=Depends(a
 
         _persist_message_best_effort(
             user, payload.conversation_id, "assistant",
-            response.get("enonce") or f"Exercice — {response.get('chapter', chapter)}",
+            response.get("enonce") or f"Exercice : {response.get('chapter', chapter)}",
             kind="exercise", payload=response,
             class_code=class_level, chapter=response.get("chapter") or chapter or None,
             difficulty=response.get("difficulty"),

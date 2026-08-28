@@ -117,7 +117,7 @@ export async function exportMessagesToDocx(messages, { filename = "chatmaths.doc
     } else if (msg.type === "exercise") {
       const ex = msg.data || {}
       children.push(
-        new Paragraph({ text: `Exercice — ${ex.chapter || ""}`, heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 100 } })
+        new Paragraph({ text: `Exercice : ${ex.chapter || ""}`, heading: HeadingLevel.HEADING_2, spacing: { before: 240, after: 100 } })
       )
       children.push(...markdownToParagraphs(docxLib, ex.enonce))
       if (Array.isArray(ex.qcm) && ex.qcm.length > 0) {
@@ -149,7 +149,7 @@ export async function exportMessagesToDocx(messages, { filename = "chatmaths.doc
 
   const doc = new Document({
     title: title || "Session ChatMaths Burkina",
-    description: "Export de conversation — ChatMaths Burkina",
+    description: "Export de conversation ChatMaths Burkina",
     sections: [{ children }],
   })
 
@@ -228,7 +228,7 @@ export async function exportHistoryToDocx(conversations, { filename = "chatmaths
 
   const doc = new Document({
     title: title || "Historique ChatMaths Burkina",
-    description: "Export complet de l'historique — ChatMaths Burkina",
+    description: "Export complet de l'historique ChatMaths Burkina",
     sections: [{ children }],
   })
 

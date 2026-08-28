@@ -103,7 +103,7 @@ export default function CourseViewer({ open, onClose, classCode, chapter }) {
   }, [status, pageNum])
 
   return (
-    <Container open={open} onClose={onClose} title={`Cours — ${chapter}`}>
+    <Container open={open} onClose={onClose} title={`Cours : ${chapter}`}>
       <div
         className="flex flex-col items-center gap-3 select-none"
         onContextMenu={(e) => e.preventDefault()}

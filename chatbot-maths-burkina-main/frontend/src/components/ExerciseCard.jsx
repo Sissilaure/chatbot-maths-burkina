@@ -65,7 +65,7 @@ export default function ExerciseCard({ exercise, onNext, generatingNext, onFetch
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-primary">
             <PencilRuler size={18} />
-            <span className="font-heading font-semibold">Exercice — {exercise.chapter}</span>
+            <span className="font-heading font-semibold">Exercice : {exercise.chapter}</span>
           </div>
           <div className="flex items-center gap-2">
             <Badge variant="neutral">{exercise.class_level}</Badge>

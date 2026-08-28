@@ -935,7 +935,7 @@ export default function App() {
     if (exportingSession) return
     setExportingSession(true)
     try {
-      const title = "Prof Amira — Session complète"
+      const title = "Prof Amira : Session complète"
       const subtitle = `${classeNom || ""}${chapitre ? " · " + chapitre : ""}`.trim()
       let filename
       if (format === "docx") {
@@ -970,7 +970,7 @@ export default function App() {
         return
       }
       const filename = `chatmaths-historique-complet-${Date.now()}.docx`
-      await exportHistoryToDocx(conversations, { filename, title: "Prof Amira — Historique complet" })
+      await exportHistoryToDocx(conversations, { filename, title: "Prof Amira : Historique complet" })
       showToast(`Fichier téléchargé : ${filename} (dossier Téléchargements)`, "success")
     } catch (err) {
       console.error("Export de l'historique échoué:", err)
