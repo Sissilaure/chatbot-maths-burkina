@@ -1199,6 +1199,7 @@ export default function App() {
             onPhotoSelected={handlePhotoExercise}
             activePhoto={Boolean(activePhoto)}
             onClearActivePhoto={() => setActivePhoto(null)}
+            onVoiceError={(msg) => showToast(msg, "error")}
             canExercise={canGenerateExercise}
             canChapterFeatures={canUseChapterFeatures}
             loading={loading || streaming}

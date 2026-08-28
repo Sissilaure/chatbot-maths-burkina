@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from "react"
 import {
   SendHorizontal, Square, PencilRuler, BookOpen, ListChecks, ClipboardCheck, Camera, ImageOff,
-  MoreHorizontal, FileDown, FileText,
+  MoreHorizontal, FileDown, FileText, Mic,
 } from "lucide-react"
 import Button from "./ui/Button"
 import ExportMenu from "./ExportMenu"
 import BottomSheet from "./ui/BottomSheet"
 import { useIsMobile } from "../lib/useMediaQuery"
+import { useSpeechRecognition } from "../lib/useSpeechRecognition"
 import { cn } from "../lib/utils"
 
 // Hauteur automatique du textarea : une ligne au repos, jusqu'à 4 lignes maximum, pas de barre
@@ -66,6 +67,7 @@ export default function ChatInput({
   onPhotoSelected,
   activePhoto,
   onClearActivePhoto,
+  onVoiceError,
   canExercise,
   canChapterFeatures,
   loading,
@@ -76,6 +78,22 @@ export default function ChatInput({
   const isMobile = useIsMobile()
   const [sheetOpen, setSheetOpen] = useState(false)
   const textareaRef = useAutoResizeTextarea(question)
+
+  // Dictée vocale (Web Speech API, navigateur uniquement — voir useSpeechRecognition.js) : pas
+  // d'appel serveur, le texte transcrit atterrit dans le champ exactement comme s'il avait été
+  // tapé, donc rien à changer côté RAG/Claude. Absente de Firefox : `voiceSupported` masque le
+  // bouton plutôt que d'afficher un micro qui ne ferait rien.
+  const { supported: voiceSupported, listening, start: startListening, stop: stopListening } = useSpeechRecognition({
+    onResult: setQuestion,
+    onError: (err) => {
+      if (err === "no-speech" || err === "aborted") return
+      if (err === "not-allowed" || err === "service-not-allowed") {
+        onVoiceError?.("Autorise l'accès au micro dans les réglages de ton navigateur pour dicter ta question.")
+      } else {
+        onVoiceError?.("La dictée vocale a rencontré un problème. Réessaie, ou tape ta question.")
+      }
+    },
+  })
 
   function handleKeyDown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -166,6 +184,18 @@ export default function ChatInput({
           onKeyDown={handleKeyDown}
           disabled={loading}
         />
+        {voiceSupported && (
+          <Button
+            variant={listening ? "primary" : "outline"}
+            size={isMobile ? "icon" : "lg"}
+            onClick={() => (listening ? stopListening() : startListening(question))}
+            disabled={loading}
+            title={listening ? "Arrêter la dictée" : "Dicter ta question à voix haute"}
+            className={cn("min-h-[44px] min-w-[44px] shrink-0", listening && "animate-pulse")}
+          >
+            <Mic size={18} className={listening ? "fill-current" : ""} />
+          </Button>
+        )}
         {/* Pendant une génération en cours (chat, exercice, prérequis, résumé — voir `loading`
             dans App.jsx), ce même bouton devient "stop" plutôt que de rester un envoi désactivé :
             l'élève n'a plus besoin d'attendre la fin d'une réponse longue pour passer à autre
