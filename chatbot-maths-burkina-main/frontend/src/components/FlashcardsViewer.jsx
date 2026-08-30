@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react"
-import { ChevronLeft, ChevronRight, Loader2, AlertTriangle, RotateCw } from "lucide-react"
+import { ChevronLeft, ChevronRight, Loader2, AlertTriangle, RotateCw, HelpCircle, CheckCircle2 } from "lucide-react"
 import Modal from "./ui/Modal.jsx"
 import BottomSheet from "./ui/BottomSheet.jsx"
+import Badge from "./ui/Badge.jsx"
 import MathContent from "./MathContent.jsx"
 import { getFlashcards } from "../api.js"
 import { useIsMobile } from "../lib/useMediaQuery.js"
@@ -90,8 +91,21 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
 
         {status === "ready" && card && (
           <>
-            <div className="w-full max-w-md text-center text-sm text-base-content/50">
-              Carte {index + 1} / {cards.length}
+            <div className="w-full max-w-md">
+              <div className="mb-2 flex items-center justify-between text-sm text-base-content/50">
+                <span>Carte {index + 1} / {cards.length}</span>
+                {flipped && (
+                  <span className="flex items-center gap-1 text-xs font-medium text-primary">
+                    <CheckCircle2 size={13} /> Réponse
+                  </span>
+                )}
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-base-200">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-300 ease-out"
+                  style={{ width: `${((index + 1) / cards.length) * 100}%` }}
+                />
+              </div>
             </div>
 
             {/* Perspective sur le conteneur externe, rotation sur l'interne : les deux faces sont
@@ -105,22 +119,30 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
               title="Cliquer pour retourner la carte"
             >
               <div
-                className="relative h-64 w-full transition-transform duration-500 ease-out [transform-style:preserve-3d]"
+                className="relative h-72 w-full transition-transform duration-500 ease-out [transform-style:preserve-3d]"
                 style={{ transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)" }}
               >
-                <div className="absolute inset-0 flex cursor-pointer flex-col items-center justify-center gap-3 overflow-y-auto rounded-2xl border border-base-300 bg-base-100 p-6 text-center shadow-sm [backface-visibility:hidden]">
-                  <div className="text-lg text-base-content">
+                <div className="absolute inset-0 flex cursor-pointer flex-col items-center justify-center gap-4 overflow-y-auto rounded-2xl border border-primary/20 bg-gradient-to-br from-base-100 to-primary/[0.06] p-7 text-center shadow-md [backface-visibility:hidden]">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+                    <HelpCircle size={20} />
+                  </div>
+                  <Badge variant="primary">Question</Badge>
+                  <div className="font-heading text-lg font-semibold leading-snug text-base-content">
                     <MathContent>{card.front}</MathContent>
                   </div>
-                  <span className="mt-2 flex items-center gap-1 text-xs text-base-content/40">
+                  <span className="mt-1 flex shrink-0 items-center gap-1.5 rounded-full bg-base-200/70 px-3 py-1.5 text-xs font-medium text-base-content/55">
                     <RotateCw size={12} /> Clique pour voir la réponse
                   </span>
                 </div>
                 <div
-                  className="absolute inset-0 flex cursor-pointer flex-col items-center justify-center overflow-y-auto rounded-2xl border border-primary/40 bg-primary/5 p-6 text-center shadow-sm [backface-visibility:hidden]"
+                  className="absolute inset-0 flex cursor-pointer flex-col items-center justify-center gap-4 overflow-y-auto rounded-2xl border border-primary/40 bg-gradient-to-br from-primary/[0.12] to-primary/5 p-7 text-center shadow-md [backface-visibility:hidden]"
                   style={{ transform: "rotateY(180deg)" }}
                 >
-                  <div className="text-lg font-semibold text-primary">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/20 text-primary">
+                    <CheckCircle2 size={20} />
+                  </div>
+                  <Badge variant="success">Réponse</Badge>
+                  <div className="font-heading text-lg font-semibold leading-snug text-primary">
                     <MathContent>{card.back}</MathContent>
                   </div>
                 </div>
