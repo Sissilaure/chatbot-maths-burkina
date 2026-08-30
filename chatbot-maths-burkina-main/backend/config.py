@@ -96,4 +96,9 @@ class Config:
     # télécharger, pas des extraits à retrouver par similarité).
     SUMMARIES_DIR = os.getenv("SUMMARIES_DIR", "./data/summaries")
 
+    # Flashcards par chapitre (voir /api/flashcards, même convention de dossiers que DATA_DIR :
+    # <classe>/<chapitre>/fichier.json), un fichier JSON par chapitre fourni par l'équipe
+    # pédagogique (voir get_flashcards côté main.py pour le format attendu).
+    FLASHCARDS_DIR = os.getenv("FLASHCARDS_DIR", "./data/flashcards")
+
 config = Config()

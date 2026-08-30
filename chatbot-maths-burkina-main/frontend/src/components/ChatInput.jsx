@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react"
 import {
   SendHorizontal, Square, PencilRuler, BookOpen, ListChecks, ClipboardCheck, Camera, ImageOff,
-  MoreHorizontal, FileDown, FileText, Mic, X, ArrowUp,
+  MoreHorizontal, FileDown, FileText, Mic, X, ArrowUp, Layers,
 } from "lucide-react"
 import Button from "./ui/Button"
 import ExportMenu from "./ExportMenu"
@@ -112,6 +112,7 @@ export default function ChatInput({
   onCourse,
   onRemediation,
   onSummary,
+  onFlashcards,
   onDownloadSession,
   onPhotoSelected,
   activePhoto,
@@ -321,6 +322,15 @@ export default function ChatInput({
         <Button
           variant="outline"
           size="sm"
+          onClick={onFlashcards}
+          disabled={!canChapterFeatures || loading}
+          title={!canChapterFeatures ? "Choisis une classe et un chapitre pour les flashcards" : "Cartes de révision recto/verso sur ce chapitre"}
+        >
+          <Layers size={14} /> Flashcards
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           onClick={onExercise}
           disabled={!canExercise || loading}
           title={!canExercise ? "Choisis une classe pour générer un exercice" : "Chapitre non choisi ? Un chapitre adapté sera proposé automatiquement."}
@@ -378,6 +388,13 @@ export default function ChatInput({
             label="Résumé du chapitre"
             hint={!canChapterFeatures ? "Choisis une classe et un chapitre" : "PDF téléchargeable des points essentiels"}
             onClick={() => runFromSheet(onSummary)}
+            disabled={!canChapterFeatures || loading}
+          />
+          <SheetAction
+            icon={Layers}
+            label="Flashcards"
+            hint={!canChapterFeatures ? "Choisis une classe et un chapitre" : "Cartes de révision recto/verso"}
+            onClick={() => runFromSheet(onFlashcards)}
             disabled={!canChapterFeatures || loading}
           />
 

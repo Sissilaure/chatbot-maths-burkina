@@ -34,6 +34,7 @@ import TypingIndicator from "./components/TypingIndicator.jsx"
 import WelcomeCard from "./components/WelcomeCard.jsx"
 import AboutPanel from "./components/AboutPanel.jsx"
 import CourseViewer from "./components/CourseViewer.jsx"
+import FlashcardsViewer from "./components/FlashcardsViewer.jsx"
 import EditProfileSheet from "./components/EditProfileSheet.jsx"
 import BottomSheet from "./components/ui/BottomSheet.jsx"
 import BackgroundBlobs from "./components/BackgroundBlobs.jsx"
@@ -101,6 +102,7 @@ export default function App() {
   const isMobile = useIsMobile()
   const [aboutOpen, setAboutOpen] = useState(false)
   const [courseViewerOpen, setCourseViewerOpen] = useState(false)
+  const [flashcardsViewerOpen, setFlashcardsViewerOpen] = useState(false)
   const [editProfileOpen, setEditProfileOpen] = useState(false)
   // Ferme la feuille Réglages/Historique (mobile) avant d'ouvrir celle du profil : sinon les deux
   // BottomSheet s'empilent visuellement (celle du profil ouverte par-dessus, celle du dessous
@@ -845,6 +847,15 @@ export default function App() {
     setCourseViewerOpen(true)
   }
 
+  function handleFlashcards() {
+    // Pas de vérification de disponibilité ici contrairement à handleCourse/handleSummary : le
+    // visualiseur (FlashcardsViewer, voir plus bas) fait lui-même l'appel et affiche son propre
+    // état "indisponible" au 404, la réponse étant un petit JSON (pas un fichier à pré-vérifier
+    // par HEAD avant d'ouvrir un onglet).
+    if (!classCode || !chapitre || loading || streaming) return
+    setFlashcardsViewerOpen(true)
+  }
+
   async function handleRemediation() {
     if (!classCode || !chapitre || loading || streaming) return
     setLoading(true)
@@ -1192,6 +1203,7 @@ export default function App() {
             onCourse={handleCourse}
             onRemediation={handleRemediation}
             onSummary={handleSummary}
+            onFlashcards={handleFlashcards}
             onDownloadSession={handleDownloadSession}
             onPhotoSelected={handlePhotoExercise}
             activePhoto={Boolean(activePhoto)}
@@ -1227,6 +1239,12 @@ export default function App() {
       <CourseViewer
         open={courseViewerOpen}
         onClose={() => setCourseViewerOpen(false)}
+        classCode={classCode}
+        chapter={chapitre}
+      />
+      <FlashcardsViewer
+        open={flashcardsViewerOpen}
+        onClose={() => setFlashcardsViewerOpen(false)}
         classCode={classCode}
         chapter={chapitre}
       />

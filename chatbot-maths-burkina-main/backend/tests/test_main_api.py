@@ -9,6 +9,7 @@ Importer `main` instancie le RAGSystem complet (modèle d'embeddings + ChromaDB)
 de ce fichier est donc lent (10-20s), les suivants réutilisent la même instance via le TestClient.
 """
 from datetime import date
+import json
 
 import psycopg
 import pytest
@@ -86,6 +87,46 @@ def test_summary_file_route_404_for_missing_document(monkeypatch, tmp_path):
 
 def test_summary_file_route_404_for_invalid_chapter():
     res = client.head("/api/summary/file/2nde/Chapitre-qui-n-existe-pas")
+    assert res.status_code == 404
+
+
+def test_flashcards_route_reads_front_back(monkeypatch, tmp_path):
+    """Schéma canonique front/back, cartes à la racine du JSON (voir get_flashcards)."""
+    chapter_dir = tmp_path / "2nde" / "Vecteurs du plan"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "cartes.json").write_text(
+        json.dumps([{"front": "Que vaut $2+2$ ?", "back": "$4$"}]), encoding="utf-8"
+    )
+    monkeypatch.setattr(main.config, "FLASHCARDS_DIR", str(tmp_path))
+
+    res = client.get("/api/flashcards/2nde/Vecteurs du plan")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["cards"] == [{"front": "Que vaut $2+2$ ?", "back": "$4$"}]
+
+
+def test_flashcards_route_accepts_wrapped_and_aliased_fields(monkeypatch, tmp_path):
+    """Tolère un objet {"cards": [...]}  et des noms de champs alternatifs (question/answer)."""
+    chapter_dir = tmp_path / "2nde" / "Vecteurs du plan"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "cartes.json").write_text(
+        json.dumps({"cards": [{"question": "Q1", "answer": "R1"}]}), encoding="utf-8"
+    )
+    monkeypatch.setattr(main.config, "FLASHCARDS_DIR", str(tmp_path))
+
+    res = client.get("/api/flashcards/2nde/Vecteurs du plan")
+    assert res.status_code == 200
+    assert res.json()["cards"] == [{"front": "Q1", "back": "R1"}]
+
+
+def test_flashcards_route_404_for_missing_document(monkeypatch, tmp_path):
+    monkeypatch.setattr(main.config, "FLASHCARDS_DIR", str(tmp_path))
+    res = client.get("/api/flashcards/4ème/Théorème de Pythagore")
+    assert res.status_code == 404
+
+
+def test_flashcards_route_404_for_invalid_chapter():
+    res = client.get("/api/flashcards/2nde/Chapitre-qui-n-existe-pas")
     assert res.status_code == 404
 
 

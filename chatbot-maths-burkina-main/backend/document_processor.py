@@ -83,17 +83,22 @@ def infer_class_from_path(path: Path, data_dir: Path) -> Optional[str]:
     return None
 
 
-def find_course_file(data_dir: str, class_code: str, chapter: str) -> Optional[str]:
-    """Cherche le document de cours (PDF/DOCX/TXT) pour une classe/un chapitre.
+def find_course_file(
+    data_dir: str, class_code: str, chapter: str, extensions: tuple = COURSE_FILE_EXTENSIONS
+) -> Optional[str]:
+    """Cherche un document (PDF/DOCX/TXT par défaut) pour une classe/un chapitre.
 
     La recherche commence par la convention officielle <data_dir>/<classe>/<chapitre>/
     puis tombe sur une recherche recursive utile pour les exports bruts de dossiers, en
     inférant la classe via CLASS_ALIASES (le nom du dossier ne correspond pas toujours
     exactement au libellé officiel, ex: "2ndc" pour "2nde").
+
+    `extensions` généralise à d'autres types de fichiers (ex: `.json` pour les flashcards, voir
+    /api/flashcards) sans dupliquer cette logique de recherche déjà éprouvée sur les cours/résumés.
     """
     folder = Path(data_dir) / sanitize_folder_name(class_code) / sanitize_folder_name(chapter)
     if folder.is_dir():
-        for ext in COURSE_FILE_EXTENSIONS:
+        for ext in extensions:
             matches = sorted(folder.glob(f"*{ext}"))
             if matches:
                 return str(matches[0])
@@ -104,7 +109,7 @@ def find_course_file(data_dir: str, class_code: str, chapter: str) -> Optional[s
     best_matched = -1
     best_score = -1
     for path in sorted(data_path.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in COURSE_FILE_EXTENSIONS:
+        if not path.is_file() or path.suffix.lower() not in extensions:
             continue
         if infer_class_from_path(path, data_path) != class_code:
             continue

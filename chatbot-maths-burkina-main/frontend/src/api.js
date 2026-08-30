@@ -342,6 +342,18 @@ export async function checkSummaryFileAvailable(classCode, chapter) {
   }
 }
 
+/**
+ * Jeu de flashcards prérédigé pour ce chapitre (fourni par l'équipe pédagogique, voir
+ * data/flashcards/ côté backend). Contrairement au cours/résumé, un fetch direct plutôt qu'un
+ * HEAD préalable : la réponse est un petit JSON structuré (pas un fichier à ouvrir dans un nouvel
+ * onglet), FlashcardsViewer.jsx gère lui-même l'état "indisponible" au 404.
+ */
+export async function getFlashcards(classCode, chapter) {
+  const res = await fetch(`${API_BASE}/api/flashcards/${encodeURIComponent(classCode)}/${encodeURIComponent(chapter)}`)
+  const data = await handleJson(res, "Erreur lors du chargement des flashcards")
+  return data.cards // [{front, back}]
+}
+
 // ---------------------------------------------------------------------------
 // Comptes élèves (auth optionnelle) : inscription/connexion, historique, accueil
 // ---------------------------------------------------------------------------

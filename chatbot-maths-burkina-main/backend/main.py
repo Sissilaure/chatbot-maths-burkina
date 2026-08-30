@@ -568,6 +568,62 @@ def get_summary_file(class_code: str, chapter: str):
     # téléchargement immédiat et systématique au moindre clic sur "Résumé".
     return FileResponse(file_path, filename=os.path.basename(file_path), content_disposition_type="inline")
 
+class Flashcard(BaseModel):
+    front: str
+    back: str
+
+class FlashcardsResponse(BaseModel):
+    class_level: str
+    chapter: str
+    cards: List[Flashcard]
+
+# Alias de champs tolérés dans le JSON déposé par l'équipe pédagogique (le contenu vient
+# probablement d'un export existant, pas forcément déjà en front/back) — voir get_flashcards.
+_FLASHCARD_FRONT_KEYS = ("front", "recto", "question", "term", "terme")
+_FLASHCARD_BACK_KEYS = ("back", "verso", "answer", "reponse", "réponse", "definition", "définition")
+
+@app.get("/api/flashcards/{class_code}/{chapter}", response_model=FlashcardsResponse)
+def get_flashcards(class_code: str, chapter: str):
+    """Renvoie le jeu de flashcards déposé pour cette classe/ce chapitre (voir data/flashcards/,
+    même convention de dossiers que data/documents/ et data/summaries/ — voir find_course_file),
+    un fichier JSON par chapitre fourni par l'équipe pédagogique. Format accepté : soit une liste
+    de cartes à la racine, soit un objet {"cards": [...]}; chaque carte accepte plusieurs noms de
+    champs usuels (voir _FLASHCARD_FRONT_KEYS/_FLASHCARD_BACK_KEYS) plutôt que d'imposer front/back
+    strictement, pour coller à un export existant sans devoir le retoucher à la main."""
+    if class_code not in get_classes():
+        raise HTTPException(status_code=404, detail="Class not found")
+    if chapter not in get_chapters(class_code):
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    file_path = find_course_file(config.FLASHCARDS_DIR, class_code, chapter, extensions=(".json",))
+    if not file_path:
+        raise HTTPException(status_code=404, detail="Aucune flashcard disponible pour ce chapitre")
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[ERROR] /api/flashcards: fichier illisible ({file_path}): {e}")
+        raise HTTPException(status_code=500, detail="Fichier de flashcards illisible")
+
+    raw_cards = raw.get("cards", []) if isinstance(raw, dict) else raw
+    if not isinstance(raw_cards, list):
+        raise HTTPException(status_code=500, detail="Format de flashcards invalide")
+
+    cards = []
+    for item in raw_cards:
+        if not isinstance(item, dict):
+            continue
+        front = next((item[k] for k in _FLASHCARD_FRONT_KEYS if item.get(k)), None)
+        back = next((item[k] for k in _FLASHCARD_BACK_KEYS if item.get(k)), None)
+        if front and back:
+            cards.append(Flashcard(front=str(front), back=str(back)))
+
+    if not cards:
+        raise HTTPException(status_code=500, detail="Aucune carte valide dans ce fichier")
+
+    return FlashcardsResponse(class_level=class_code, chapter=chapter, cards=cards)
+
 @app.post("/api/exercise", response_model=ExerciseResponse)
 @limiter.limit(LLM_RATE_LIMIT)
 def generate_exercise(request: Request, payload: ExerciseRequest, user=Depends(auth.get_current_user_optional)):
