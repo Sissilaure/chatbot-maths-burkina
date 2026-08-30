@@ -587,9 +587,11 @@ def get_flashcards(class_code: str, chapter: str):
     """Renvoie le jeu de flashcards déposé pour cette classe/ce chapitre (voir data/flashcards/,
     même convention de dossiers que data/documents/ et data/summaries/ — voir find_course_file),
     un fichier JSON par chapitre fourni par l'équipe pédagogique. Format accepté : soit une liste
-    de cartes à la racine, soit un objet {"cards": [...]}; chaque carte accepte plusieurs noms de
-    champs usuels (voir _FLASHCARD_FRONT_KEYS/_FLASHCARD_BACK_KEYS) plutôt que d'imposer front/back
-    strictement, pour coller à un export existant sans devoir le retoucher à la main."""
+    de cartes à la racine, soit un objet {"cards": [...]} ou {"cartes": [...]} (schéma réel livré
+    par l'équipe pédagogique, avec niveau/chapitre/source/nombre_cartes en plus, ignorés ici) ;
+    chaque carte accepte plusieurs noms de champs usuels (voir _FLASHCARD_FRONT_KEYS/
+    _FLASHCARD_BACK_KEYS, dont recto/verso) plutôt que d'imposer front/back strictement, pour
+    coller à un export existant sans devoir le retoucher à la main."""
     if class_code not in get_classes():
         raise HTTPException(status_code=404, detail="Class not found")
     if chapter not in get_chapters(class_code):
@@ -606,7 +608,10 @@ def get_flashcards(class_code: str, chapter: str):
         print(f"[ERROR] /api/flashcards: fichier illisible ({file_path}): {e}")
         raise HTTPException(status_code=500, detail="Fichier de flashcards illisible")
 
-    raw_cards = raw.get("cards", []) if isinstance(raw, dict) else raw
+    if isinstance(raw, dict):
+        raw_cards = raw.get("cards") or raw.get("cartes") or []
+    else:
+        raw_cards = raw
     if not isinstance(raw_cards, list):
         raise HTTPException(status_code=500, detail="Format de flashcards invalide")
 

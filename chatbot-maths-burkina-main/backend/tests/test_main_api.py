@@ -119,6 +119,37 @@ def test_flashcards_route_accepts_wrapped_and_aliased_fields(monkeypatch, tmp_pa
     assert res.json()["cards"] == [{"front": "Q1", "back": "R1"}]
 
 
+def test_flashcards_route_reads_real_pedagogical_schema(monkeypatch, tmp_path):
+    """Schéma réel livré par l'équipe pédagogique (voir LISEZ-MOI.md) : clé "cartes" (pas "cards"),
+    champs recto/verso, plus des métadonnées ignorées (niveau/chapitre/source/nombre_cartes/id/
+    lecon/type/difficulte/tags) qui ne doivent pas faire échouer le parsing."""
+    chapter_dir = tmp_path / "3ème" / "Théorème de Thalès et sa réciproque"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "flashcards_3eme_Chapitre_8_Thales.json").write_text(
+        json.dumps({
+            "niveau": "3ème",
+            "chapitre": "Chapitre 8 : Théorème de Thalès et sa réciproque",
+            "source": "maths/3eme/Chapitre_8_Thales",
+            "nombre_cartes": 1,
+            "cartes": [{
+                "id": "3E-CH08-001", "lecon": "Configuration de Thalès", "type": "definition",
+                "recto": "Dans quelle configuration peut-on appliquer le théorème de Thalès ?",
+                "verso": "Deux droites sécantes en $A$ coupées par deux droites parallèles.",
+                "difficulte": 1, "tags": ["thales", "configuration"],
+            }],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main.config, "FLASHCARDS_DIR", str(tmp_path))
+
+    res = client.get("/api/flashcards/3ème/Théorème de Thalès et sa réciproque")
+    assert res.status_code == 200
+    assert res.json()["cards"] == [{
+        "front": "Dans quelle configuration peut-on appliquer le théorème de Thalès ?",
+        "back": "Deux droites sécantes en $A$ coupées par deux droites parallèles.",
+    }]
+
+
 def test_flashcards_route_404_for_missing_document(monkeypatch, tmp_path):
     monkeypatch.setattr(main.config, "FLASHCARDS_DIR", str(tmp_path))
     res = client.get("/api/flashcards/4ème/Théorème de Pythagore")
