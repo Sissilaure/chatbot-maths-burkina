@@ -414,11 +414,11 @@ def update_profile_fields(user_id: str, **fields) -> Optional[dict]:
 
 def create_conversation(user_id: str, class_code: str = "",
                         chapter: str = "") -> dict:
-    # Titre neutre à la création : remplacé par la première vraie question de l'élève (voir
-    # add_message, "Titre auto = première question de l'élève") plutôt que "classe · chapitre",
-    # qui n'aide pas à distinguer les conversations d'une même classe/chapitre entre elles. Une
-    # conversation démarrée par une action sans question tapée (exercice, prérequis...) garde ce
-    # titre neutre, faute d'un premier message "user" pour le mettre à jour.
+    # Titre neutre à la création : remplacé au premier message par la vraie question de l'élève,
+    # ou à défaut (conversation démarrée par un exercice/prérequis, sans question tapée) par un
+    # titre déduit du chapitre — voir add_message/_fallback_conversation_title. Un titre "classe ·
+    # chapitre" fixe dès la création n'aiderait pas à distinguer les conversations d'une même
+    # classe/chapitre entre elles.
     title = "Nouvelle conversation"
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -505,6 +505,23 @@ def purge_deleted_conversations(days: int = 30) -> int:
 # Messages
 # --------------------------------------------------------------------------
 
+# Titre de repli quand le tout premier message d'une conversation est de l'assistant (exercice ou
+# prérequis généré sans qu'aucune question n'ait été tapée, voir /api/exercise et /api/prerequis
+# côté main.py) : sans ça, "Titre auto = première question de l'élève" ne s'applique jamais et le
+# titre neutre "Nouvelle conversation" reste collé pour toujours, même après de vrais échanges —
+# c'était le bug remonté par l'utilisatrice ("l'historique ne marche pas vraiment"). On ne reprend
+# pas `content` tel quel pour ces kind-là : c'est l'énoncé complet de l'exercice (un paragraphe),
+# pas un titre court.
+_ASSISTANT_FIRST_MESSAGE_LABELS = {"exercise": "Exercice", "prerequis": "Prérequis"}
+
+
+def _fallback_conversation_title(kind: str, chapter: Optional[str]) -> Optional[str]:
+    label = _ASSISTANT_FIRST_MESSAGE_LABELS.get(kind)
+    if not label:
+        return None
+    return f"{label} : {chapter}" if chapter else label
+
+
 def add_message(
     conversation_id: str,
     user_id: str,
@@ -552,18 +569,24 @@ def add_message(
                 if row is None:
                     return None   # conversation inexistante ou pas la sienne
 
-                # Titre auto = première question de l'élève
+                # Titre auto = première question de l'élève, ou à défaut (premier message de
+                # l'assistant, ex: exercice/prérequis généré sans question tapée) un titre déduit
+                # du chapitre — voir _fallback_conversation_title. Jamais appliqué après le tout
+                # premier message (message_count = 0, lu AVANT l'incrément ci-dessus) : on ne veut
+                # pas écraser un titre déjà fixé par la suite de la conversation.
+                fallback_title = None if role == "user" else _fallback_conversation_title(kind, chapter)
                 cur.execute(
                     f"""UPDATE {SCHEMA}.conversations
                         SET message_count = message_count + 1,
                             updated_at = now(),
                             title = CASE
-                                WHEN %s = 'user' AND message_count = 0
-                                THEN left(%s, 80)
+                                WHEN message_count != 0 THEN title
+                                WHEN %s = 'user' THEN left(%s, 80)
+                                WHEN %s::text IS NOT NULL THEN %s::text
                                 ELSE title
                             END
                         WHERE id = %s""",
-                    (role, content, conversation_id),
+                    (role, content, fallback_title, fallback_title, conversation_id),
                 )
                 d = dict(row)
                 d["id"] = str(d["id"])

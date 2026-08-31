@@ -79,6 +79,67 @@ def test_message_seq_is_ordered_and_incremental(unique_username):
     ]
 
 
+def test_title_set_from_first_user_message(unique_username):
+    student = _make_user(unique_username)
+    conv = db.create_conversation(student["id"], "6ème", "Les fractions")
+    assert conv["title"] == "Nouvelle conversation"
+
+    db.add_message(conv["id"], student["id"], "user", "Comment simplifier une fraction ?")
+
+    updated = db.get_conversation(conv["id"], student["id"])
+    assert updated["title"] == "Comment simplifier une fraction ?"
+
+
+def test_title_falls_back_to_chapter_when_first_message_is_an_exercise(unique_username):
+    """Régression : une conversation démarrée par "Exercice" (sans question tapée, voir
+    /api/exercise) persiste l'énoncé complet comme premier message, dont le rôle est "assistant"
+    — l'ancienne logique de titre ("Titre auto = première question de l'élève", role='user'
+    uniquement) ne se déclenchait donc jamais, et le titre restait "Nouvelle conversation" pour
+    toujours, même après de vrais échanges ensuite. C'est le bug remonté par l'utilisatrice."""
+    student = _make_user(unique_username)
+    conv = db.create_conversation(student["id"], "Tle", "Suites numériques")
+
+    db.add_message(
+        conv["id"], student["id"], "assistant",
+        "Énoncé complet de l'exercice généré, potentiellement très long...",
+        kind="exercise", chapter="Suites numériques",
+    )
+
+    updated = db.get_conversation(conv["id"], student["id"])
+    assert updated["title"] == "Exercice : Suites numériques"
+
+    # Un vrai échange ensuite ne doit PAS écraser ce titre déjà fixé.
+    db.add_message(conv["id"], student["id"], "user", "Explique-moi la question 2")
+    still = db.get_conversation(conv["id"], student["id"])
+    assert still["title"] == "Exercice : Suites numériques"
+
+
+def test_title_falls_back_to_chapter_when_first_message_is_prerequis(unique_username):
+    student = _make_user(unique_username)
+    conv = db.create_conversation(student["id"], "3ème", "Théorème de Pythagore et sa réciproque")
+
+    db.add_message(
+        conv["id"], student["id"], "assistant", "QCM de prérequis : Théorème de Pythagore et sa réciproque",
+        kind="prerequis", chapter="Théorème de Pythagore et sa réciproque",
+    )
+
+    updated = db.get_conversation(conv["id"], student["id"])
+    assert updated["title"] == "Prérequis : Théorème de Pythagore et sa réciproque"
+
+
+def test_title_stays_neutral_for_other_assistant_first_messages(unique_username):
+    """Pas de titre de repli en dehors d'exercise/prerequis (ex: un message "chat" ne devrait
+    normalement jamais être le tout premier message d'une conversation, mais si ça arrivait, mieux
+    vaut garder le titre neutre que d'en afficher un absurde)."""
+    student = _make_user(unique_username)
+    conv = db.create_conversation(student["id"], "6ème", "Les fractions")
+
+    db.add_message(conv["id"], student["id"], "assistant", "Un message quelconque", kind="chat")
+
+    updated = db.get_conversation(conv["id"], student["id"])
+    assert updated["title"] == "Nouvelle conversation"
+
+
 def test_admin_aggregates_hidden_below_min_cohort(unique_username):
     chapter = f"Chapitre test {unique_username('')}"  # nom garanti unique, pas de collision
     class_code = "3ème"

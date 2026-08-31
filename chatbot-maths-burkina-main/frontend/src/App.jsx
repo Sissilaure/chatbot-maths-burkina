@@ -761,7 +761,10 @@ export default function App() {
     const controller = new AbortController()
     abortControllerRef.current = controller
     try {
-      const convId = await ensureConversation().catch(() => null)
+      // Hint synchronisé avec le titre de repli calculé côté serveur (voir
+      // database.py::_fallback_conversation_title) : sans question tapée, "Exercice" est le tout
+      // premier message de la conversation, donc rien d'autre ne fixera jamais son titre.
+      const convId = await ensureConversation(chapitre ? `Exercice : ${chapitre}` : "Exercice").catch(() => null)
       const priorExercises = messages
         .filter((m) => m.type === "exercise")
         .map((m, i) => {
@@ -863,7 +866,9 @@ export default function App() {
     abortControllerRef.current = controller
     try {
       const history = buildHistoryUpTo(messages)
-      const convId = await ensureConversation().catch(() => null)
+      // Même raisonnement que dans handleExercise : hint synchronisé avec le titre de repli
+      // calculé côté serveur (voir database.py::_fallback_conversation_title).
+      const convId = await ensureConversation(`Prérequis : ${chapitre}`).catch(() => null)
       const remediation = await generatePrerequis(classCode, chapitre, history, convId, controller.signal)
       pushRemediationMessage(remediation)
       recordTopicVisit(classCode, chapitre, classeNom)
