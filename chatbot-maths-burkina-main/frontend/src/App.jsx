@@ -955,7 +955,11 @@ export default function App() {
         filename = `chatmaths-session-${Date.now()}.docx`
         await exportMessagesToDocx(messages, { filename, title, subtitle })
       } else {
-        if (!sessionContentRef.current) return
+        // Ne devrait pas arriver (la ref est posée sur le conteneur des messages dès le premier
+        // rendu), mais rendre la main SANS le moindre toast en cas contraire laisserait l'élève
+        // sans aucun retour après un clic — symptôme "le bouton ne fait rien" indiscernable d'un
+        // vrai échec de génération.
+        if (!sessionContentRef.current) throw new Error("Zone de session introuvable pour l'export PDF")
         filename = `chatmaths-session-${Date.now()}.pdf`
         await exportNodeToPDF(sessionContentRef.current, { filename, title, subtitle })
       }

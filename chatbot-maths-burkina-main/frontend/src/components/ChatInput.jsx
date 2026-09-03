@@ -357,7 +357,7 @@ export default function ChatInput({
           <Camera size={14} className={photoLoading ? "animate-pulse" : ""} />
           {photoLoading ? "Analyse en cours…" : "Photo / fichier d'exercice"}
         </Button>
-        <ExportMenu onExport={onDownloadSession} exporting={exportingSession} label="PDF / Word" align="left" />
+        <ExportMenu onExport={onDownloadSession} exporting={exportingSession} label="PDF / Word" align="left" openUpward />
       </div>
 
       <BottomSheet open={sheetOpen} onClose={() => setSheetOpen(false)} title="Plus d'actions">

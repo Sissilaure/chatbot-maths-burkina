@@ -8,8 +8,15 @@ import Button from "./ui/Button"
  * troisième entrée "Tout mon historique (Word)" apparaît, distincte de l'export de la SEULE
  * session à l'écran (onExport).
  * Se ferme automatiquement quand le focus quitte le composant (clic ailleurs, Échap+Tab...).
+ *
+ * `openUpward` : le menu s'ouvre par défaut vers le bas (`top-full`), pertinent pour l'usage en
+ * haut du panneau de chat (App.jsx) où la place ne manque pas en dessous. Mais ChatInput.jsx
+ * utilise ce même composant tout en bas de l'écran (barre d'outils au-dessus du champ de saisie) :
+ * un menu qui s'ouvre encore vers le bas y sort alors de la fenêtre ou se retrouve caché derrière
+ * le pied de page, rendant "PDF"/"Word" impossibles à cliquer — symptôme "le bouton Télécharger ne
+ * marche pas" côté élève. `openUpward` bascule l'ancrage vers `bottom-full` pour cet usage-là.
  */
-export default function ExportMenu({ onExport, onExportHistory, exporting, label = "Télécharger", align = "right" }) {
+export default function ExportMenu({ onExport, onExportHistory, exporting, label = "Télécharger", align = "right", openUpward = false }) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -33,9 +40,9 @@ export default function ExportMenu({ onExport, onExportHistory, exporting, label
       </Button>
       {open && (
         <div
-          className={`absolute z-20 mt-1 w-44 overflow-hidden rounded-xl border border-base-300 bg-base-100 shadow-lg ${
+          className={`absolute z-20 w-44 overflow-hidden rounded-xl border border-base-300 bg-base-100 shadow-lg ${
             align === "right" ? "right-0" : "left-0"
-          }`}
+          } ${openUpward ? "bottom-full mb-1" : "top-full mt-1"}`}
         >
           <button
             type="button"
