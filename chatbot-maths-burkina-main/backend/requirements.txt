@@ -1,8 +1,16 @@
 # Serveur API
-fastapi==0.115.0
+# fastapi/starlette/python-multipart relevés (étaient 0.115.0/0.38.6/0.0.9) suite à un audit de
+# sécurité : starlette<=0.47.1 est vulnérable à CVE-2025-54121 (l'upload d'un fichier dépassant le
+# seuil de spool bloque la boucle événementielle asyncio le temps de l'écrire sur disque — DoS
+# exploitable sans authentification via /api/exercise/photo, ouverte aux invités) ; python-
+# multipart<0.0.18 à CVE-2024-53981 (DoS via boundary malformé). Épinglé en exact (comme le reste
+# de ce fichier) plutôt qu'avec un simple plancher : starlette 1.x (refonte majeure) n'est pas
+# auditée ici, une résolution automatique future ne doit pas y basculer silencieusement.
+fastapi==0.141.1
+starlette==0.52.1
 uvicorn[standard]==0.30.0
 pydantic==2.9.0
-python-multipart==0.0.9
+python-multipart==0.0.32
 python-dotenv==1.0.1
 
 # RAG : embeddings + base vectorielle (Postgres/pgvector, Neon — voir DEPLOY.md DATABASE_URL)

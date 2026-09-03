@@ -59,6 +59,16 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+# Hash "factice" utilisé quand le nom d'utilisateur n'existe pas (voir POST /api/auth/login) :
+# sans lui, `verify_password` n'est jamais appelé pour un compte inexistant, ce qui rend la
+# réponse mesurablement plus rapide que pour un mauvais mot de passe (verify_password fait
+# tourner bcrypt, ~100ms) — un canal auxiliaire permettant à un attaquant de deviner quels noms
+# d'utilisateur existent par simple mesure du temps de réponse, avant même de tenter les mots de
+# passe. Toujours comparer contre CE hash (jamais le hash réel d'un autre compte) neutralise le
+# canal en gardant un coût bcrypt constant, sans jamais faire correspondre un mot de passe.
+DUMMY_PASSWORD_HASH = hash_password(secrets.token_hex(32))
+
+
 def create_token(user_id: str, username: str) -> str:
     # user_id est un UUID (str) depuis la migration vers Postgres/Neon (voir database.py) —
     # str() est un no-op si l'appelant passe déjà une chaîne, gardé pour tolérer un appelant

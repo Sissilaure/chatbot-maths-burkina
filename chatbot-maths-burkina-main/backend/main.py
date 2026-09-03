@@ -103,6 +103,38 @@ app.add_middleware(
 # (X-Frame-Options), le MIME-sniffing (X-Content-Type-Options), et limite les informations de
 # provenance envoyées vers d'autres sites (Referrer-Policy). HSTS est sans effet en local (HTTP)
 # mais utile derrière Railway/Cloudflare qui terminent le HTTPS en amont.
+#
+# CSP : filet de sécurité supplémentaire contre le XSS (aucune injection connue actuellement — le
+# frontend n'utilise ni dangerouslySetInnerHTML ni rehype-raw, voir MathContent.jsx — mais une
+# regression future serait bien plus dure à exploiter avec ceci en place). script-src 'self' SANS
+# 'unsafe-inline' : le build Vite ne charge que des <script src="/assets/...">, jamais de script
+# inline, donc un futur script injecté serait bloqué net. style-src garde 'unsafe-inline' : React
+# pose énormément de styles via l'attribut style="" (ex: FlashcardsViewer, la barre de progression)
+# que CSP régit aussi, pas seulement les balises <style> — l'interdire casserait une bonne partie
+# de l'UI. connect-src/img-src/media-src 'self' seulement : toutes les requêtes API sont en URL
+# relative (voir api.js), aucune ressource média externe hors polices Google. worker-src blob:
+# requis par pdf.js (CourseViewer.jsx) qui instancie parfois son worker via un Blob plutôt que
+# l'URL statique.
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    # data: nécessaire pour les polices KaTeX : Vite inline en base64 les fichiers de police sous
+    # son seuil de taille (voir assetsInlineLimit), directement dans le CSS buildé plutôt que
+    # comme fichiers séparés sous /assets — constaté en testant ce CSP en conditions réelles
+    # (violation "font-src" bloquant le rendu des formules dès l'ouverture des flashcards).
+    "font-src 'self' data: https://fonts.gstatic.com; "
+    "img-src 'self' data: blob:; "
+    "media-src 'self' blob:; "
+    "connect-src 'self'; "
+    "worker-src 'self' blob:; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -110,6 +142,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = _CSP
     return response
 
 # Initialize RAG system
@@ -809,11 +842,18 @@ async def upload_document(
         if not safe_filename or ext not in ALLOWED_UPLOAD_EXTENSIONS:
             raise HTTPException(status_code=400, detail="Unsupported file format")
 
+        content = await file.read()
+        # Même garde-fou que /api/exercise/photo (MAX_EXERCISE_PHOTO_SIZE_BYTES) : réservé aux
+        # décideurs, donc pas un vecteur d'abus anonyme, mais un fichier de cours n'a de toute
+        # façon aucune raison de dépasser cette taille — évite qu'un envoi malencontreux ne
+        # remplisse le disque du serveur.
+        if len(content) > config.MAX_DOCUMENT_UPLOAD_SIZE_BYTES:
+            raise HTTPException(status_code=400, detail="Fichier trop volumineux (50 Mo maximum)")
+
         os.makedirs(config.DATA_DIR, exist_ok=True)
 
         file_path = os.path.join(config.DATA_DIR, safe_filename)
         with open(file_path, "wb") as buffer:
-            content = await file.read()
             buffer.write(content)
 
         processor = DocumentProcessor(config.DATA_DIR)
@@ -936,7 +976,13 @@ def register(request: Request, payload: RegisterRequest):
 @limiter.limit(AUTH_RATE_LIMIT)
 def login(request: Request, payload: LoginRequest):
     user = database.get_user_by_username(payload.username.strip())
-    if not user or not auth.verify_password(payload.password, user["password_hash"]):
+    # Toujours appeler verify_password (avec un hash factice si le compte n'existe pas, voir
+    # auth.DUMMY_PASSWORD_HASH) plutôt que court-circuiter sur `not user` : sans ça, la réponse
+    # est mesurablement plus rapide pour un nom d'utilisateur inexistant (bcrypt jamais exécuté)
+    # que pour un mauvais mot de passe, un canal auxiliaire exploitable pour deviner les comptes
+    # existants par simple mesure du temps de réponse.
+    password_ok = auth.verify_password(payload.password, user["password_hash"] if user else auth.DUMMY_PASSWORD_HASH)
+    if not user or not password_ok:
         raise HTTPException(status_code=401, detail="Nom d'utilisateur ou mot de passe incorrect")
 
     try:
@@ -1261,6 +1307,21 @@ def health_check():
 # capturerait sinon les routes /api/* définies plus haut.
 # ============================================================================
 
+def _safe_static_path(base_dir: str, requested_path: str) -> Optional[str]:
+    """Résout `requested_path` (venant tel quel de l'URL, ex: "../../etc/passwd" ou un chemin
+    absolu) sous `base_dir`, ou renvoie None s'il en sortirait. Un simple os.path.join() concatène
+    ce genre de valeur sans la neutraliser, et le système de fichiers résout ensuite les ".."
+    normalement — un classique de traversée de chemin qui permettrait de lire n'importe quel
+    fichier accessible au process (jusqu'à /proc/self/environ, qui contiendrait
+    JWT_SECRET/DATABASE_URL/ANTHROPIC_API_KEY en clair côté serveur_frontend, voir serve_frontend
+    plus bas). realpath() résout tous les ".."/liens symboliques des deux côtés puis on vérifie
+    explicitement que le résultat reste SOUS base_dir avant de le considérer valide."""
+    base_real = os.path.realpath(base_dir)
+    candidate_real = os.path.realpath(os.path.join(base_dir, requested_path))
+    is_inside = candidate_real == base_real or candidate_real.startswith(base_real + os.sep)
+    return candidate_real if is_inside else None
+
+
 if os.path.isdir(_FRONTEND_DIST):
     _assets_dir = os.path.join(_FRONTEND_DIST, "assets")
     if os.path.isdir(_assets_dir):
@@ -1269,9 +1330,12 @@ if os.path.isdir(_FRONTEND_DIST):
     @app.get("/{full_path:path}")
     def serve_frontend(full_path: str):
         """Sert index.html pour toute route qui n'est ni /api/* ni un fichier statique
-        existant (le routage côté client — React Router — gère le reste dans le navigateur)."""
-        candidate = os.path.join(_FRONTEND_DIST, full_path)
-        if full_path and os.path.isfile(candidate):
+        existant (le routage côté client — React Router — gère le reste dans le navigateur).
+        Voir _safe_static_path : un repli sur index.html plutôt qu'une 404/403 explicite pour tout
+        chemin hors de _FRONTEND_DIST, cohérent avec le comportement normal de cette route pour
+        toute route inconnue côté client."""
+        candidate = full_path and _safe_static_path(_FRONTEND_DIST, full_path)
+        if candidate and os.path.isfile(candidate):
             return FileResponse(candidate)
         return _index_html_response()
 

@@ -38,6 +38,10 @@ class Config:
     # Photo d'exercice envoyée par l'élève : au-delà, on refuse plutôt que de laisser l'upload
     # traîner (mobile en 3G) ou de gonfler inutilement le payload envoyé à l'API Claude.
     MAX_EXERCISE_PHOTO_SIZE_BYTES = int(os.getenv("MAX_EXERCISE_PHOTO_SIZE_BYTES", str(8 * 1024 * 1024)))
+    # Document de cours déposé par un décideur (voir /api/documents/upload) : réservé à ce rôle,
+    # donc pas un vecteur d'abus anonyme, mais borné quand même pour éviter qu'un envoi
+    # malencontreux ne remplisse le disque du serveur.
+    MAX_DOCUMENT_UPLOAD_SIZE_BYTES = int(os.getenv("MAX_DOCUMENT_UPLOAD_SIZE_BYTES", str(50 * 1024 * 1024)))
     # Nombre maximal de "continuations" automatiques si Claude tronque une réponse
     # (relance transparente pour ne jamais couper une explication en plein milieu).
     MAX_AUTO_CONTINUATIONS = int(os.getenv("MAX_AUTO_CONTINUATIONS", "3"))

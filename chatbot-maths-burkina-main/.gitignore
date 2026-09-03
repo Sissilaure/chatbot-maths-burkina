@@ -37,6 +37,19 @@ dist-ssr/
 .env
 .env.local
 .env.*.local
+# Sauvegardes ponctuelles d'un .env (ex: avant un nettoyage de variables) : mêmes secrets, mais
+# un nom horodaté ("*.env.bak-20260902...") ne matche aucun des motifs ci-dessus et se
+# retrouverait suivi par erreur au premier `git add` large si on oubliait de le supprimer.
+.env.bak*
+*.env.bak*
+
+# Secrets génériques (clés privées, certificats) : rien de tel n'est censé exister dans ce repo,
+# mais autant s'en prémunir plutôt que de compter sur la vigilance à chaque commit.
+*.pem
+*.key
+id_rsa*
+*.p12
+*.pfx
 
 # IDE
 .vscode/

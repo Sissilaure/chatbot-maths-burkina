@@ -10,6 +10,7 @@ de ce fichier est donc lent (10-20s), les suivants réutilisent la même instanc
 """
 from datetime import date
 import json
+import os
 
 import psycopg
 import pytest
@@ -693,3 +694,49 @@ def test_dead_db_connection_degrades_to_guest_on_optional_auth(unique_username, 
         headers=_auth_headers(token),
     )
     assert res.status_code == 200
+
+
+def test_login_rejects_unknown_username_with_generic_error():
+    """Même message d'erreur générique qu'un mauvais mot de passe (voir
+    test_register_and_login_roundtrip) : pas d'énumération de comptes via le contenu de la
+    réponse. auth.DUMMY_PASSWORD_HASH garantit aussi qu'aucun raccourci de code ne saute l'appel
+    à bcrypt pour ce cas, ce qui rendrait la réponse mesurablement plus rapide (canal auxiliaire)."""
+    res = client.post(
+        "/api/auth/login",
+        json={"username": "ce-compte-n-existe-vraiment-pas", "password": "peu-importe"},
+    )
+    assert res.status_code == 401
+    assert res.json()["detail"] == "Nom d'utilisateur ou mot de passe incorrect"
+
+
+# ---- Traversée de chemin sur la route catch-all de service du frontend (voir _safe_static_path
+# et serve_frontend dans main.py) ----
+
+def test_safe_static_path_rejects_traversal_outside_base_dir(tmp_path):
+    base = tmp_path / "frontend_dist"
+    base.mkdir()
+    (base / "index.html").write_text("ok")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("ne doit jamais être lisible via cette route")
+
+    assert main._safe_static_path(str(base), "../secret.txt") is None
+    assert main._safe_static_path(str(base), "../../etc/passwd") is None
+
+
+def test_safe_static_path_rejects_absolute_path_escaping_base_dir(tmp_path):
+    base = tmp_path / "frontend_dist"
+    base.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret")
+
+    assert main._safe_static_path(str(base), str(outside)) is None
+
+
+def test_safe_static_path_allows_legitimate_nested_file(tmp_path):
+    base = tmp_path / "frontend_dist"
+    (base / "assets").mkdir(parents=True)
+    (base / "assets" / "logo.png").write_bytes(b"fake-png")
+
+    resolved = main._safe_static_path(str(base), "assets/logo.png")
+    assert resolved is not None
+    assert resolved.endswith(os.path.join("assets", "logo.png"))
