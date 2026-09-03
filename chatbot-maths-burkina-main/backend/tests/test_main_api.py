@@ -614,23 +614,26 @@ def test_exercise_photo_ignores_malformed_history(monkeypatch):
 
 
 def test_generate_remediation_resilient_to_retrieval_failure(monkeypatch):
-    """generate_remediation cherche maintenant des extraits de cours pour ancrer le QCM (utile
-    pour les chapitres "Remédiation Hakili Lab") : si cette recherche échoue, la génération du
-    QCM ne doit pas planter pour autant (repli silencieux, voir le try/except du code)."""
+    """generate_remediation (alias de generate_prerequis) cherche des extraits de cours pour
+    ancrer le diagnostic : si cette recherche échoue, la génération ne doit pas planter pour
+    autant (repli silencieux, voir le try/except du code) et doit quand même renvoyer le vrai
+    diagnostic structuré par notion (voir _parse_prerequis_json), pas le repli local générique."""
     def broken_retrieve(*args, **kwargs):
         raise RuntimeError("chroma indisponible")
 
-    one_question = (
-        '{"notion": "n", "question": "q", "choix": ["a", "b", "c", "d"], '
-        '"reponse_correcte_index": 0, "explication": "e", "conseil": "c"}'
+    one_notion = (
+        '{{"notion": "n{i}", "rappel": "r{i}", "exercices": ['
+        '{{"question": "q{i}", "choix": ["a", "b", "c", "d"], '
+        '"reponse_correcte_index": 0, "explication": "e"}}]}}'
     )
-    fake_json = '{"questions": [' + ",".join([one_question] * 8) + "]}"
+    fake_json = '{"notions": [' + ",".join(one_notion.format(i=i) for i in range(3)) + "]}"
 
     monkeypatch.setattr(main.rag_system, "_retrieve_with_filters", broken_retrieve)
     monkeypatch.setattr(main.rag_system, "_call_claude", lambda *a, **k: fake_json)
 
     questions = main.rag_system.generate_remediation("3ème", "Les fractions", history=[])
-    assert len(questions) == 8
+    assert len(questions) == 3
+    assert [q["notion"] for q in questions] == ["n0", "n1", "n2"]
 
 
 def test_exercise_photo_without_history_defaults_to_empty_list(monkeypatch):
