@@ -224,6 +224,18 @@ class RAGSystem:
 
         print(f"Added {len(docs)} documents to vector store")
 
+    @staticmethod
+    def _exact_filter(key: str, value: str) -> ExactMatchFilter:
+        """Construit un ExactMatchFilter sûr pour du texte contenant une apostrophe (ex: chapitre
+        "Racine carrée d'un nombre réel positif"). llama-index-vector-stores-postgres construit le
+        WHERE en interpolant la valeur brute dans du SQL littéral (`f"'{filter_.value}'"`, voir
+        _build_filter_clause dans postgres/base.py) sans l'échapper : une apostrophe non doublée y
+        casse la requête (psycopg2.errors.SyntaxError), faisant silencieusement échouer le filtre
+        exact et retomber sur des correspondances moins fiables (repli par nom de fichier, voire
+        aucun résultat — "Voir le cours" 404 sur ces chapitres). Doubler l'apostrophe est l'échappement
+        SQL standard d'un littéral, sans changer la valeur réellement comparée."""
+        return ExactMatchFilter(key=key, value=value.replace("'", "''"))
+
     def _retrieve_with_filters(self, question, filters, top_k):
         metadata_filters = MetadataFilters(filters=filters) if filters else None
         retriever = self.index.as_retriever(
@@ -238,9 +250,9 @@ class RAGSystem:
 
         exact_filters = []
         if class_level:
-            exact_filters.append(ExactMatchFilter(key="class", value=class_level))
+            exact_filters.append(self._exact_filter("class", class_level))
         if chapter:
-            exact_filters.append(ExactMatchFilter(key="chapter", value=chapter))
+            exact_filters.append(self._exact_filter("chapter", chapter))
 
         nodes = self._retrieve_with_filters(question, exact_filters, top_k)
         if nodes or not (class_level and chapter):
@@ -249,7 +261,7 @@ class RAGSystem:
         # Les documents importes depuis des exports ZIP/Drive n'ont pas toujours un
         # libelle de chapitre identique au curriculum. On garde alors la classe, mais
         # on relache le filtre chapitre pour ne pas ignorer les manuels disponibles.
-        class_only_filters = [ExactMatchFilter(key="class", value=class_level)]
+        class_only_filters = [self._exact_filter("class", class_level)]
         return self._retrieve_with_filters(question, class_only_filters, top_k)
 
     def find_course_file_from_index(self, class_level: str, chapter: str) -> Optional[str]:
@@ -262,7 +274,7 @@ class RAGSystem:
         try:
             nodes = self._retrieve_with_filters(
                 chapter,
-                [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
+                [self._exact_filter("class", class_level), self._exact_filter("chapter", chapter)],
                 top_k=1,
             )
         except Exception as e:
@@ -820,7 +832,7 @@ RÈGLES DE MISE EN FORME :
         try:
             context_nodes = self._retrieve_with_filters(
                 f"Prérequis nécessaires avant d'aborder le chapitre {chapter}",
-                [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
+                [self._exact_filter("class", class_level), self._exact_filter("chapter", chapter)],
                 top_k=3,
             )
             if context_nodes:
@@ -1109,7 +1121,7 @@ Ne mets pas de titre Markdown (##), juste le message directement, comme si tu pa
                 if chapter:
                     context_nodes = self._retrieve_with_filters(
                         chapter,
-                        [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
+                        [self._exact_filter("class", class_level), self._exact_filter("chapter", chapter)],
                         top_k=4,
                     )
                 else:

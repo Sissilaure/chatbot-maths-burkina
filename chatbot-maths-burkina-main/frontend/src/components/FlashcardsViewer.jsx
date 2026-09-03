@@ -1,16 +1,42 @@
 import React, { useEffect, useState } from "react"
-import { ChevronLeft, ChevronRight, Loader2, AlertTriangle, RotateCw, HelpCircle, CheckCircle2 } from "lucide-react"
+import {
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  AlertTriangle,
+  RotateCw,
+  HelpCircle,
+  CheckCircle2,
+  Shuffle,
+  ListChecks,
+} from "lucide-react"
 import Modal from "./ui/Modal.jsx"
 import BottomSheet from "./ui/BottomSheet.jsx"
 import Badge from "./ui/Badge.jsx"
+import Button from "./ui/Button.jsx"
 import MathContent from "./MathContent.jsx"
-import { getFlashcards } from "../api.js"
+import { getFlashcards, getChapters } from "../api.js"
 import { useIsMobile } from "../lib/useMediaQuery.js"
+
+function shuffleArray(arr) {
+  const copy = [...arr]
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[copy[i], copy[j]] = [copy[j], copy[i]]
+  }
+  return copy
+}
 
 /**
  * Jeu de flashcards "recto/verso" façon Quizlet : une carte à la fois, clic (ou touche Espace)
  * pour la retourner et voir la réponse, flèches pour naviguer. Voir get_flashcards côté backend
  * pour le format JSON attendu (un fichier par chapitre, déposé par l'équipe pédagogique).
+ *
+ * Avant de charger les cartes, une étape "picking" permet de choisir un ou plusieurs chapitres —
+ * volontairement indépendante du chapitre sélectionné dans la barre latérale (App.jsx) : l'élève
+ * peut réviser plusieurs chapitres à la fois sans changer sa sélection principale. Les jeux de
+ * chaque chapitre choisi sont simplement concaténés (un chapitre sans fichier de flashcards est
+ * ignoré silencieusement, sauf si AUCUN des chapitres choisis n'en a).
  */
 export default function FlashcardsViewer({ open, onClose, classCode, chapter }) {
   const isMobile = useIsMobile()
@@ -18,34 +44,56 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
   const [cards, setCards] = useState([])
   const [index, setIndex] = useState(0)
   const [flipped, setFlipped] = useState(false)
-  const [status, setStatus] = useState("loading") // "loading" | "ready" | "error" | "unavailable"
+  const [status, setStatus] = useState("picking") // "picking" | "loading" | "ready" | "error" | "unavailable"
+  const [allChapters, setAllChapters] = useState([])
+  const [selectedChapters, setSelectedChapters] = useState([])
 
   useEffect(() => {
     if (!open) return
-    let cancelled = false
-    setStatus("loading")
+    setStatus("picking")
+    setSelectedChapters(chapter ? [chapter] : [])
     setIndex(0)
     setFlipped(false)
-
-    getFlashcards(classCode, chapter)
-      .then((data) => {
-        if (cancelled) return
-        if (!data || data.length === 0) {
-          setStatus("unavailable")
-          return
-        }
-        setCards(data)
-        setStatus("ready")
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setStatus(err?.status === 404 ? "unavailable" : "error")
-      })
-
-    return () => {
-      cancelled = true
-    }
+    getChapters(classCode)
+      .then((list) => setAllChapters(list || []))
+      .catch(() => setAllChapters(chapter ? [chapter] : []))
   }, [open, classCode, chapter])
+
+  function toggleChapter(ch) {
+    setSelectedChapters((prev) =>
+      prev.includes(ch) ? prev.filter((c) => c !== ch) : [...prev, ch]
+    )
+  }
+
+  function loadSelectedChapters() {
+    if (selectedChapters.length === 0) return
+    setStatus("loading")
+    Promise.allSettled(
+      selectedChapters.map((ch) =>
+        getFlashcards(classCode, ch).then((cardsForChapter) =>
+          (cardsForChapter || []).map((c) => ({ ...c, chapterLabel: ch }))
+        )
+      )
+    ).then((results) => {
+      const merged = results
+        .filter((r) => r.status === "fulfilled")
+        .flatMap((r) => r.value)
+      if (merged.length === 0) {
+        setStatus("unavailable")
+        return
+      }
+      setCards(merged)
+      setIndex(0)
+      setFlipped(false)
+      setStatus("ready")
+    })
+  }
+
+  function handleShuffle() {
+    setCards((prev) => shuffleArray(prev))
+    setIndex(0)
+    setFlipped(false)
+  }
 
   function goTo(next) {
     setFlipped(false)
@@ -64,10 +112,57 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
   }
 
   const card = cards[index]
+  const title =
+    status === "picking"
+      ? "Flashcards"
+      : selectedChapters.length > 1
+        ? `Flashcards (${selectedChapters.length} chapitres)`
+        : `Flashcards : ${selectedChapters[0] || chapter}`
 
   return (
-    <Container open={open} onClose={onClose} title={`Flashcards : ${chapter}`}>
+    <Container open={open} onClose={onClose} title={title}>
       <div className="flex flex-col items-center gap-4" onKeyDown={handleKeyDown} tabIndex={-1}>
+        {status === "picking" && (
+          <div className="flex w-full max-w-md flex-col gap-3">
+            <p className="text-sm text-base-content/60">
+              Choisis un ou plusieurs chapitres à réviser (indépendamment du chapitre sélectionné dans le menu principal).
+            </p>
+            <div className="scrollbar-thin flex max-h-[45vh] flex-col gap-1 overflow-y-auto rounded-xl border border-base-300/60 p-2">
+              {allChapters.length === 0 && (
+                <div className="flex items-center justify-center gap-2 py-6 text-base-content/50">
+                  <Loader2 size={16} className="animate-spin" /> Chargement des chapitres…
+                </div>
+              )}
+              {allChapters.map((ch) => (
+                <label
+                  key={ch}
+                  className="flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 text-sm hover:bg-base-200"
+                >
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-sm checkbox-primary mt-0.5"
+                    checked={selectedChapters.includes(ch)}
+                    onChange={() => toggleChapter(ch)}
+                  />
+                  <span className="text-base-content">{ch}</span>
+                </label>
+              ))}
+            </div>
+            <Button
+              variant="primary"
+              size="md"
+              className="w-full"
+              disabled={selectedChapters.length === 0}
+              onClick={loadSelectedChapters}
+            >
+              <ListChecks size={16} />
+              {selectedChapters.length > 1
+                ? `Réviser ${selectedChapters.length} chapitres`
+                : "Réviser ce chapitre"}
+            </Button>
+          </div>
+        )}
+
         {status === "loading" && (
           <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-base-content/50">
             <Loader2 size={22} className="animate-spin" />
@@ -76,9 +171,14 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
         )}
 
         {status === "unavailable" && (
-          <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center text-base-content/60">
+          <div className="flex min-h-[40vh] flex-col items-center justify-center gap-3 text-center text-base-content/60">
             <AlertTriangle size={22} />
-            Pas encore de flashcards disponibles pour ce chapitre.
+            {selectedChapters.length > 1
+              ? "Pas encore de flashcards disponibles pour ces chapitres."
+              : "Pas encore de flashcards disponibles pour ce chapitre."}
+            <Button variant="outline" size="sm" onClick={() => setStatus("picking")}>
+              Choisir d'autres chapitres
+            </Button>
           </div>
         )}
 
@@ -93,12 +193,27 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
           <>
             <div className="w-full max-w-md">
               <div className="mb-2 flex items-center justify-between text-sm text-base-content/50">
-                <span>Carte {index + 1} / {cards.length}</span>
-                {flipped && (
-                  <span className="flex items-center gap-1 text-xs font-medium text-primary">
-                    <CheckCircle2 size={13} /> Réponse
-                  </span>
-                )}
+                <span>
+                  Carte {index + 1} / {cards.length}
+                  {selectedChapters.length > 1 && card.chapterLabel && (
+                    <span className="ml-2 text-xs text-base-content/40">· {card.chapterLabel}</span>
+                  )}
+                </span>
+                <div className="flex items-center gap-3">
+                  {flipped && (
+                    <span className="flex items-center gap-1 text-xs font-medium text-primary">
+                      <CheckCircle2 size={13} /> Réponse
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleShuffle}
+                    title="Mélanger les cartes"
+                    className="flex items-center gap-1 text-xs font-medium text-base-content/50 hover:text-primary"
+                  >
+                    <Shuffle size={13} /> Mélanger
+                  </button>
+                </div>
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-base-200">
                 <div
@@ -169,6 +284,14 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
                 <ChevronRight size={18} />
               </button>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setStatus("picking")}
+              className="text-xs font-medium text-base-content/40 hover:text-primary"
+            >
+              Changer les chapitres
+            </button>
           </>
         )}
       </div>
