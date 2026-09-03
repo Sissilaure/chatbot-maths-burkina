@@ -234,11 +234,13 @@ const pointScreenPositions = Array.from(pointMap.values()).map((p) => ({
 
   return (
     <div className="my-2 flex justify-center">
+      {/* SVG responsive : viewBox fixe (320x240, le tracé ne change pas) mais largeur fluide
+          jusqu'à sa taille de conception — s'adapte aux petits écrans sans jamais s'agrandir
+          au-delà sur un conteneur large (voir RAPPORT_MOBILE.md §8). */}
       <svg
-        width={VIEW_WIDTH}
-        height={VIEW_HEIGHT}
         viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
-        className="max-w-full overflow-visible text-base-content/80"
+        preserveAspectRatio="xMidYMid meet"
+        className="h-auto w-full max-w-[320px] overflow-visible text-base-content/80"
         role="img"
         aria-label={spec.title || "Figure géométrique"}
       >

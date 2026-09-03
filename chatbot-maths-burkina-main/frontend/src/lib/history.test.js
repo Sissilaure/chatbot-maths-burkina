@@ -13,7 +13,7 @@ describe("buildHistoryUpTo", () => {
     ])
   })
 
-  it("ignores exercise/remediation messages (no role/content shape)", () => {
+  it("ignores exercise/prerequis messages (no role/content shape)", () => {
     const messages = [
       { type: "user", text: "Génère un exercice" },
       { type: "exercise", data: { enonce: "..." } },

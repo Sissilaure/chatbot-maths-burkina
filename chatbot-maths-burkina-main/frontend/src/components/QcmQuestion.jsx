@@ -7,7 +7,7 @@ const LETTERS = ["A", "B", "C", "D"]
 
 /**
  * Une question à choix multiples réutilisée par l'exercice 1 étoile (feedback immédiat par
- * question) et par le QCM de remédiation (révélation groupée après le bouton "Valider").
+ * question) et par le QCM de prérequis (révélation groupée après le bouton "Valider").
  */
 export default function QcmQuestion({ index, question, choices, correctIndex, explication, selected, onSelect, revealed }) {
   return (

@@ -1,16 +1,20 @@
 """Authentification des comptes élèves : hash de mot de passe (bcrypt) et
 tokens de connexion (JWT bearer, pas de session serveur)."""
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import bcrypt
 import jwt
+import psycopg
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from config import config
 import database
+
+logger = logging.getLogger(__name__)
 
 JWT_ALGORITHM = "HS256"
 JWT_SECRET_FILE = Path(config.DB_PATH).parent / ".jwt_secret"
@@ -55,7 +59,10 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_token(user_id: int, username: str) -> str:
+def create_token(user_id: str, username: str) -> str:
+    # user_id est un UUID (str) depuis la migration vers Postgres/Neon (voir database.py) —
+    # str() est un no-op si l'appelant passe déjà une chaîne, gardé pour tolérer un appelant
+    # qui passerait encore un uuid.UUID non converti.
     payload = {
         "sub": str(user_id),
         "username": username,
@@ -75,10 +82,52 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_securi
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Token invalide ou expiré")
 
-    user = database.get_user_by_id(int(payload["sub"]))
+    # payload["sub"] est un UUID en chaîne (voir create_token) : les tokens émis avant la
+    # migration Postgres (sub = entier SQLite) ne correspondront plus à aucun utilisateur et
+    # échoueront proprement ici avec 401, forçant une reconnexion.
+    try:
+        user = database.get_user_by_id(payload["sub"])
+    except psycopg.OperationalError as exc:
+        # Neon met le calcul en veille après une période d'inactivité : une connexion morte peut
+        # remonter jusqu'ici malgré le contrôle du pool (voir database.get_pool, check_connection)
+        # — ex: la veille survient pendant que la requête est déjà en vol. Sans ce garde-fou,
+        # l'exception se propageait telle quelle et l'élève se retrouvait renvoyé à l'écran de
+        # connexion pour une panne base qui n'a rien à voir avec son token : trompeur en
+        # production (« ça me déconnecte tout le temps », alors que le token est valide).
+        logger.error("Base de données indisponible pendant l'authentification: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporairement indisponible, réessaie dans un instant.",
+        ) from exc
     if not user:
         raise HTTPException(status_code=401, detail="Utilisateur introuvable")
     return user
+
+
+def get_current_user_optional(credentials: HTTPAuthorizationCredentials = Depends(_security)):
+    """Variante non bloquante de get_current_user, pour les routes ouvertes (chat, exercice,
+    remédiation, résumé, simplification, photo) qui restent utilisables sans compte, mais qui
+    persistent l'échange côté serveur quand l'appelant EST connecté (voir main.py,
+    _persist_exchange_best_effort). Retourne None plutôt que de lever 401 si le token est absent,
+    invalide ou expiré — dans ce dernier cas, la requête se comporte comme un invité plutôt que
+    d'échouer. Contrairement à get_current_user (authentification stricte, voir plus haut) : une
+    base indisponible (réveil Neon, voir database.get_pool) dégrade ici aussi vers "invité"
+    plutôt que de lever 503 — ces routes doivent rester utilisables par un élève sans compte même
+    pendant une panne base, elles n'ont justement pas besoin d'un compte pour fonctionner."""
+    if not credentials:
+        return None
+    try:
+        payload = jwt.decode(credentials.credentials, _get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+    except jwt.PyJWTError:
+        return None
+    try:
+        return database.get_user_by_id(payload["sub"])
+    except psycopg.OperationalError as exc:
+        logger.warning(
+            "Base de données indisponible pendant la résolution optionnelle de l'utilisateur, "
+            "requête traitée comme invité: %s", exc,
+        )
+        return None
 
 
 def require_decideur(user=Depends(get_current_user)):
@@ -86,4 +135,58 @@ def require_decideur(user=Depends(get_current_user)):
     (créés hors inscription publique, voir create_decideur.py)."""
     if user["role"] != "decideur":
         raise HTTPException(status_code=403, detail="Accès réservé aux comptes décideur")
+    return user
+
+
+def is_consent_ok(user: dict) -> bool:
+    return user.get("consent_version") == config.CONSENT_VERSION
+
+
+def require_consent(user=Depends(get_current_user)):
+    """Dépendance FastAPI : 428 (Precondition Required) si le compte n'a pas accepté la version
+    courante du consentement (config.CONSENT_VERSION, voir consent_text.py). Couvre deux cas :
+    les comptes migrés depuis l'ancienne base SQLite (consent_version = NULL, voir
+    migrate_sqlite_to_pg.py) et les comptes déjà inscrits sous un texte de consentement antérieur
+    si celui-ci a changé depuis. Le frontend distingue ce cas de require_complete_profile via le
+    champ "reason" du detail (voir POST /api/consent/accept, ConsentNotice.jsx)."""
+    if not is_consent_ok(user):
+        raise HTTPException(
+            status_code=428,
+            detail={"reason": "consent_required", "message": "Consentement requis avant de continuer."},
+        )
+    return user
+
+
+# Champs de la fiche d'inscription rendus obligatoires à l'inscription (voir RegisterRequest
+# dans main.py) mais qui restent NULLABLES en base (voir database.py, non modifié) : les comptes
+# migrés depuis l'ancienne base SQLite (migrate_sqlite_to_pg.py) les ont à NULL, l'obligation
+# n'étant appliquée qu'à l'API et à l'interface, jamais par une contrainte NOT NULL.
+# is_candidat_libre a NOT NULL DEFAULT false dans le schéma fourni : cette colonne ne peut donc
+# jamais valoir NULL, y compris pour un compte migré (voir RAPPORT_MIGRATION.md — la sous-condition
+# ci-dessous est incluse pour rester fidèle à la spécification mais ne peut pas se déclencher
+# en pratique tant que database.py garde ce défaut).
+_PROFILE_REQUIRED_FIELDS = ("class_code", "gender", "birth_date", "is_candidat_libre")
+
+
+def is_profile_complete(user: dict) -> bool:
+    return all(user.get(field) is not None for field in _PROFILE_REQUIRED_FIELDS)
+
+
+def require_complete_profile(user=Depends(get_current_user)):
+    """Dépendance FastAPI : 428 si la fiche d'inscription n'est pas complète. Utilisable telle
+    quelle sur une route qui exige déjà l'authentification (ex: un futur /api/profile/complete).
+    Les routes "métier" ouvertes aux invités (chat, exercice, remédiation — voir main.py) ne
+    PEUVENT PAS utiliser cette dépendance directement : Depends() force get_current_user, donc
+    l'authentification, ce qui casserait le mode invité. Elles appellent à la place
+    is_profile_complete(user) après avoir résolu l'utilisateur via get_current_user_optional,
+    et ne lèvent le 428 QUE si un compte est effectivement connecté (voir
+    main._ensure_authenticated_user_ready)."""
+    if not is_profile_complete(user):
+        raise HTTPException(
+            status_code=428,
+            detail={
+                "reason": "profile_incomplete",
+                "message": "Complète ta fiche d'inscription avant de continuer.",
+            },
+        )
     return user

@@ -4,6 +4,7 @@ import { Bot, GraduationCap, Copy, Check, RefreshCcw, BookOpen, ListChecks, Baby
 import Button from "./ui/Button"
 import Card from "./ui/Card"
 import MathContent from "./MathContent"
+import { formatMessageTime } from "../lib/dateFormat"
 
 const KIND_META = {
   summary: { label: "Résumé", icon: ListChecks, colorClass: "text-primary" },
@@ -11,10 +12,16 @@ const KIND_META = {
   error: { label: "Erreur", icon: AlertTriangle, colorClass: "text-error" },
 }
 
-export default function MessageBubble({ message, onRegenerate, regenerating }) {
+// "Simplifie" n'a de sens que sur une réponse de chat "normale" — pas sur un résumé, une version
+// déjà simplifiée, ou un message d'erreur (même critère que l'ancien canSimplify de ChatInput,
+// désormais évalué par message plutôt que globalement — voir App.jsx::handleSimplify).
+const SIMPLIFIABLE_KINDS = [undefined, "chat"]
+
+export default function MessageBubble({ message, onRegenerate, regenerating, onSimplify, simplifying }) {
   const isUser = message.type === "user"
   const [copied, setCopied] = useState(false)
   const kindMeta = KIND_META[message.kind]
+  const canSimplify = Boolean(onSimplify) && SIMPLIFIABLE_KINDS.includes(message.kind)
 
   async function handleCopy() {
     try {
@@ -41,7 +48,11 @@ export default function MessageBubble({ message, onRegenerate, regenerating }) {
         {isUser ? <GraduationCap size={18} /> : <Bot size={18} />}
       </div>
 
-      <div className={`flex max-w-[85%] flex-col gap-1.5 ${isUser ? "items-end" : "items-start"}`}>
+      {/* min-w-0 : sans ça, un enfant flex ne rétrécit jamais sous la largeur intrinsèque de son
+          contenu (formule KaTeX ou tableau large) — le overflow-x:auto de .prose-chat ne sert
+          alors à rien, la bulle entière pousse la page au lieu de défiler en interne (voir
+          RAPPORT_MOBILE.md §8). */}
+      <div className={`flex min-w-0 max-w-[85%] flex-col gap-1.5 ${isUser ? "items-end" : "items-start"}`}>
         <Card
           className={`px-4 py-3 ${
             isUser
@@ -97,6 +108,10 @@ export default function MessageBubble({ message, onRegenerate, regenerating }) {
           )}
         </Card>
 
+        {message.createdAt && (
+          <span className="px-1 text-[11px] text-base-content/40">{formatMessageTime(message.createdAt)}</span>
+        )}
+
         {!isUser && message.text && (
           <div className="flex items-center gap-1 px-1">
             <Button variant="ghost" size="icon" title="Copier" onClick={handleCopy}>
@@ -105,6 +120,17 @@ export default function MessageBubble({ message, onRegenerate, regenerating }) {
             {onRegenerate && (
               <Button variant="ghost" size="icon" title="Régénérer la réponse" onClick={onRegenerate} disabled={regenerating}>
                 <RefreshCcw size={14} className={regenerating ? "animate-spin" : ""} />
+              </Button>
+            )}
+            {canSimplify && (
+              <Button
+                variant="ghost"
+                size="icon"
+                title="Simplifie cette réponse"
+                onClick={onSimplify}
+                disabled={simplifying}
+              >
+                <Baby size={14} className={simplifying ? "animate-pulse" : ""} />
               </Button>
             )}
           </div>

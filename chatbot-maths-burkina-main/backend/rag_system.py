@@ -15,6 +15,15 @@ import anthropic
 
 EMBED_DIM = 384  # sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 
+# Dossier explicite pour le cache du modèle d'embeddings — SANS ce `cache_folder` explicite,
+# HuggingFaceEmbedding retombe sur llama_index.core.utils.get_cache_dir() (/tmp/llama_index),
+# alors que le Dockerfile le pré-télécharge dans le cache HuggingFace par défaut (~/.cache/
+# huggingface/hub) pour éviter tout accès réseau au démarrage (voir Dockerfile) : les deux
+# chemins ne correspondaient pas, donc le conteneur re-téléchargeait (et échouait si le réseau
+# sortant était bloqué/instable) à chaque démarrage au lieu d'utiliser le cache déjà présent
+# dans l'image. Ce chemin doit rester identique à celui utilisé dans le Dockerfile.
+EMBED_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hf_cache")
+
 
 FIGURE_FORMAT_INSTRUCTIONS = """FIGURES GÉOMÉTRIQUES — RÈGLE ABSOLUE, PRIORITAIRE SUR TOUT LE RESTE :
 Dès qu'une figure, un schéma ou un dessin serait utile (triangle, cercle, angle, repère, configuration de \
@@ -42,6 +51,13 @@ qui sert UNIQUEMENT à des annotations supplémentaires (longueur d'un côté co
 comme "(BC) // (DE)"). Place chaque `label` LÉGÈREMENT À L'ÉCART du trait ou de la forme qu'il annote (décalé \
 perpendiculairement au segment, jamais pile sur ses coordonnées ni à l'intérieur d'un polygone rempli), pour qu'il \
 ne se superpose pas au dessin. Place ce bloc directement dans ta réponse, au bon endroit dans le texte."""
+
+MATH_FORMAT_INSTRUCTIONS = """FORMULES ET SYMBOLES — RÈGLE ABSOLUE : toute formule ou expression mathématique s'écrit \
+en LaTeX : `$...$` pour une formule en ligne, `$$...$$` pour une formule isolée. N'écris JAMAIS une formule en texte \
+brut (écris $a^n$, jamais a^n ; écris $a^m \\times a^n = a^{m+n}$, jamais a^m x a^n = a^(m+n)). Cela vaut aussi pour \
+tous les symboles mathématiques (∈, ≤, ≥, √, π, →, ∑, ∞, vecteurs, exposants, indices...) : toujours en LaTeX \
+(`\\infty`, `\\in`, `\\leq`, `\\to`, `\\sqrt{}`, `x^{2}`, `u_{n}`...), jamais en Unicode brut ni épelés en toutes \
+lettres. Écris $+\\infty$, jamais « + infini » ; $x \\in \\mathbb{R}$, jamais « x appartient à R »."""
 
 NO_EMOJI_INSTRUCTIONS = """TON ET MISE EN FORME — RÈGLE ABSOLUE : N'utilise JAMAIS d'emoji ni de pictogramme (aucun symbole \
 du type ✅, ⚠️, 💡, 🎉, 👋, 💪, 📐, 🚀, ✨, etc.), nulle part dans ta réponse, même pour marquer une réussite, un \
@@ -94,8 +110,8 @@ def _repair_latex_json_escapes(text: str) -> str:
 # generate_exercise, qui le traite à part (jamais ancré sur les documents de cours déposés :
 # aucun contenu de ce type dedans, vérifié).
 STAR_DIFFICULTY_LABELS = {
-    1: "1 ÉTOILE — QCM D'APPLICATION DIRECTE (une seule notion de base, restitution immédiate du cours)",
-    2: "2 ÉTOILES — APPLICATION GUIDÉE (1-2 étapes de raisonnement)",
+    1: "1 ÉTOILE — QCM D'APPLICATION DIRECTE (questions de cours)",
+    2: "2 ÉTOILES — APPLICATION DIRECTE DES DEFINITIONS, PROPRIETES, AXIOMES, REGLES ...",
     3: "3 ÉTOILES — NOTIONS COMBINÉES (plusieurs étapes, proche d'une évaluation de classe)",
     4: "4 ÉTOILES — SITUATION D'INTÉGRATION (énoncé contextualisé complexe, plusieurs notions combinées, niveau examen)",
     5: "5 ÉTOILES — TYPE OLYMPIADES (problème de concours : astuce ou idée non standard, hors du cadre direct du "
@@ -106,7 +122,8 @@ STAR_DIFFICULTY_LABELS = {
 class RAGSystem:
     def __init__(self):
         self.embed_model = HuggingFaceEmbedding(
-            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            cache_folder=EMBED_CACHE_DIR,
         )
         LlamaSettings.embed_model = self.embed_model
 
@@ -114,6 +131,10 @@ class RAGSystem:
         self.anthropic_api_key = config.ANTHROPIC_API_KEY
         self.anthropic_model = config.ANTHROPIC_MODEL
         self.anthropic_client = None
+        # `claude-sonnet-5` rejette `temperature` ("deprecated for this model") — détecté au premier
+        # appel (voir _create_message/_stream_claude) puis mémorisé ici pour éviter de retenter à
+        # chaque appel un paramètre qu'on sait déjà refusé par le modèle configuré.
+        self._temperature_supported = True
         if self.anthropic_api_key:
             try:
                 self.anthropic_client = anthropic.Anthropic(api_key=self.anthropic_api_key)
@@ -203,6 +224,18 @@ class RAGSystem:
 
         print(f"Added {len(docs)} documents to vector store")
 
+    @staticmethod
+    def _exact_filter(key: str, value: str) -> ExactMatchFilter:
+        """Construit un ExactMatchFilter sûr pour du texte contenant une apostrophe (ex: chapitre
+        "Racine carrée d'un nombre réel positif"). llama-index-vector-stores-postgres construit le
+        WHERE en interpolant la valeur brute dans du SQL littéral (`f"'{filter_.value}'"`, voir
+        _build_filter_clause dans postgres/base.py) sans l'échapper : une apostrophe non doublée y
+        casse la requête (psycopg2.errors.SyntaxError), faisant silencieusement échouer le filtre
+        exact et retomber sur des correspondances moins fiables (repli par nom de fichier, voire
+        aucun résultat — "Voir le cours" 404 sur ces chapitres). Doubler l'apostrophe est l'échappement
+        SQL standard d'un littéral, sans changer la valeur réellement comparée."""
+        return ExactMatchFilter(key=key, value=value.replace("'", "''"))
+
     def _retrieve_with_filters(self, question, filters, top_k):
         metadata_filters = MetadataFilters(filters=filters) if filters else None
         retriever = self.index.as_retriever(
@@ -217,9 +250,9 @@ class RAGSystem:
 
         exact_filters = []
         if class_level:
-            exact_filters.append(ExactMatchFilter(key="class", value=class_level))
+            exact_filters.append(self._exact_filter("class", class_level))
         if chapter:
-            exact_filters.append(ExactMatchFilter(key="chapter", value=chapter))
+            exact_filters.append(self._exact_filter("chapter", chapter))
 
         nodes = self._retrieve_with_filters(question, exact_filters, top_k)
         if nodes or not (class_level and chapter):
@@ -228,7 +261,7 @@ class RAGSystem:
         # Les documents importes depuis des exports ZIP/Drive n'ont pas toujours un
         # libelle de chapitre identique au curriculum. On garde alors la classe, mais
         # on relache le filtre chapitre pour ne pas ignorer les manuels disponibles.
-        class_only_filters = [ExactMatchFilter(key="class", value=class_level)]
+        class_only_filters = [self._exact_filter("class", class_level)]
         return self._retrieve_with_filters(question, class_only_filters, top_k)
 
     def find_course_file_from_index(self, class_level: str, chapter: str) -> Optional[str]:
@@ -241,7 +274,7 @@ class RAGSystem:
         try:
             nodes = self._retrieve_with_filters(
                 chapter,
-                [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
+                [self._exact_filter("class", class_level), self._exact_filter("chapter", chapter)],
                 top_k=1,
             )
         except Exception as e:
@@ -269,23 +302,30 @@ class RAGSystem:
 
     def _create_message(self, system_prompt: str, messages: list, max_tokens: int, temperature: float,
                          tools: list = None):
-        """Un seul appel bas niveau à l'API Messages, avec repli si le modèle rejette `temperature`."""
+        """Un seul appel bas niveau à l'API Messages, avec repli si le modèle rejette `temperature`.
+
+        `temperature` passe par `extra_body` plutôt qu'en paramètre nommé direct : le SDK anthropic
+        (>=1.x) a retiré `temperature` de la signature typée de `create()`/`stream()`, ce qui lève un
+        TypeError côté client avant même la requête HTTP — `extra_body` la transmet telle quelle à
+        l'API, qui répond alors par un vrai BadRequestError si le modèle la refuse, rattrapable ici."""
         kwargs = {
             "model": self.anthropic_model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "system": system_prompt,
             "messages": messages,
         }
         if tools:
             kwargs["tools"] = tools
+        if self._temperature_supported:
+            kwargs["extra_body"] = {"temperature": temperature}
         try:
             return self.anthropic_client.messages.create(**kwargs)
         except anthropic.BadRequestError as e:
             # Certains modèles récents (ex: reasoning models) rejettent un temperature
             # personnalisé. On retente sans ce paramètre plutôt que de tout faire échouer.
             if "temperature" in str(e).lower():
-                kwargs.pop("temperature")
+                self._temperature_supported = False
+                kwargs.pop("extra_body", None)
                 return self.anthropic_client.messages.create(**kwargs)
             raise
 
@@ -363,20 +403,23 @@ class RAGSystem:
 
             # `messages.stream(...)` ne fait la requête HTTP qu'à l'entrée du context manager
             # (__enter__), donc le repli "sans temperature" doit être tenté à ce moment-là,
-            # pas au moment de la simple construction de l'objet stream.
-            stream_ctx = self.anthropic_client.messages.stream(
-                model=self.anthropic_model, max_tokens=max_tokens, temperature=temp,
-                system=system_prompt, messages=current_messages
-            )
+            # pas au moment de la simple construction de l'objet stream. Voir _create_message pour
+            # pourquoi `temperature` passe par `extra_body` plutôt qu'en paramètre nommé direct.
+            stream_kwargs = {
+                "model": self.anthropic_model, "max_tokens": max_tokens,
+                "system": system_prompt, "messages": current_messages,
+            }
+            if self._temperature_supported:
+                stream_kwargs["extra_body"] = {"temperature": temp}
+            stream_ctx = self.anthropic_client.messages.stream(**stream_kwargs)
             try:
                 stream = stream_ctx.__enter__()
             except anthropic.BadRequestError as e:
                 if "temperature" not in str(e).lower():
                     raise
-                stream_ctx = self.anthropic_client.messages.stream(
-                    model=self.anthropic_model, max_tokens=max_tokens,
-                    system=system_prompt, messages=current_messages
-                )
+                self._temperature_supported = False
+                stream_kwargs.pop("extra_body", None)
+                stream_ctx = self.anthropic_client.messages.stream(**stream_kwargs)
                 stream = stream_ctx.__enter__()
 
             try:
@@ -732,14 +775,22 @@ RÈGLES DE MISE EN FORME :
                 "bien cadrée sur l'exercice, ou recopie l'énoncé directement dans le chat.")
 
     # ========================================================================
-    # REMÉDIATION (QCM diagnostique de 8 questions sur le chapitre)
+    # PRÉREQUIS (QCM diagnostique sur les notions ANTÉRIEURES nécessaires à ce chapitre)
     # ========================================================================
 
-    def generate_remediation(self, class_level: str, chapter: str, history: list = None) -> list:
-        """QCM diagnostique de 8 questions sur le chapitre : sert à vérifier que l'élève a
-        compris le cours avant de continuer, et à repérer les notions précises à revoir sinon.
-        Si l'élève a posé des questions récemment, le QCM insiste davantage sur les notions
-        liées à ses préoccupations réelles plutôt que de survoler le chapitre au hasard."""
+    def generate_prerequis(self, class_level: str, chapter: str, history: list = None) -> list:
+        """Identifie les notions prérequises indispensables pour aborder ce chapitre (vues dans des
+        chapitres ANTÉRIEURS, pas le chapitre lui-même) et renvoie, pour chacune, un court RAPPEL de
+        cours (ce que l'élève doit déjà savoir) suivi de 1 à 2 exercices diagnostiques — jamais l'inverse :
+        l'élève doit pouvoir relire la notion avant de s'y confronter, pas deviner à l'aveugle puis
+        recevoir une correction. Renvoie une liste de groupes {notion, rappel, exercices} (voir
+        _parse_prerequis_json), PAS une liste plate de questions.
+        Les fiches de cours Hakili Lab listent presque toujours ces prérequis explicitement en tête de
+        chapitre (ex: « Prérequis : le milieu d'un segment (Ch. 1), les angles (Ch. 3)... ») — voir le
+        bloc de retrieval ci-dessous, qui cible spécifiquement cette ligne plutôt que le contenu général
+        du chapitre. Si l'élève a posé des questions récentes, elles pèsent sur QUELLES notions méritent
+        2 exercices plutôt qu'un seul, pas sur le fait de tester le chapitre en cours (voir
+        _local_prerequis pour le repli si Claude est indisponible)."""
 
         recent_questions = [
             turn.get("content", "").strip()
@@ -751,73 +802,109 @@ RÈGLES DE MISE EN FORME :
             context_block = (
                 "L'élève a récemment posé ces questions dans sa conversation (ordre chronologique) :\n"
                 + "\n".join(f'- « {q} »' for q in recent_questions) +
-                "\n\nCONSIGNE IMPORTANTE : fais porter une bonne partie des 8 questions sur les notions "
-                "concrètement en jeu dans ces questions (ses préoccupations réelles), pas seulement sur "
-                "un survol générique du chapitre. Complète avec d'autres notions du chapitre pour rester complet."
+                "\n\nCONSIGNE IMPORTANTE : si l'une de ces questions touche déjà une notion prérequise "
+                "de ce chapitre, prévois 2 exercices diagnostiques pour celle-là plutôt qu'un seul "
+                "(elle mérite d'être vérifiée plus en profondeur) ; un exercice suffit pour les autres."
             )
         else:
-            context_block = "L'élève n'a pas encore posé de question précise : couvre le chapitre de façon équilibrée."
+            context_block = ("L'élève n'a pas encore posé de question précise : répartis les exercices "
+                              "de façon équilibrée entre les notions prérequises identifiées.")
 
-        # Ancrage dans les documents fournis (même logique que generate_exercise) : filtre EXACT
-        # classe+chapitre pour ne récupérer que des extraits réellement déposés pour ce chapitre
-        # précis (utile en particulier pour les chapitres "Remédiation Hakili Lab", qui contiennent
-        # des modules de rattrapage tout faits avec exemples résolus et exercices corrigés).
+        # Repère utile quand le document de cours cite un chapitre antérieur par son numéro
+        # (ex: « Prérequis : ... (Ch. 3) », voir document_block plus bas) : le modèle peut alors
+        # relier ce numéro au bon intitulé plutôt que de deviner.
+        previous_chapters_block = ""
+        chapters_list = CURRICULUM.get(class_level, {}).get("chapters", [])
+        if chapter in chapters_list:
+            idx = chapters_list.index(chapter)
+            if idx > 0:
+                previous_chapters_block = "\n".join(f"Ch. {i} — {c}" for i, c in enumerate(chapters_list[:idx]))
+        previous_chapters_context = (
+            f"\nCHAPITRES ANTÉRIEURS DE {class_level}, POUR RÉFÉRENCE (numérotés comme dans les fiches de "
+            f"cours) :\n{previous_chapters_block}\n" if previous_chapters_block else ""
+        )
+
+        # Ancrage documentaire : la fiche de CE chapitre commence quasi-systématiquement par une ligne
+        # « Prérequis : notion (Ch. X), notion (Ch. Y)... » (vérifié sur les PDF Hakili Lab déposés) —
+        # la requête cible explicitement cette ligne, contrairement à une recherche générique sur le
+        # nom du chapitre qui ramènerait plutôt le contenu du chapitre lui-même.
         document_block = ""
         try:
             context_nodes = self._retrieve_with_filters(
-                chapter,
-                [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
-                top_k=4,
+                f"Prérequis nécessaires avant d'aborder le chapitre {chapter}",
+                [self._exact_filter("class", class_level), self._exact_filter("chapter", chapter)],
+                top_k=3,
             )
             if context_nodes:
                 document_excerpts = "\n---\n".join(n.get_content()[:800] for n in context_nodes)
                 document_block = f"""
-DOCUMENTS DE COURS FOURNIS — appuie-toi EN PRIORITÉ sur ces extraits (mêmes notions, mêmes exemples \
-que le professeur a préparés) pour rédiger les questions et leurs explications :
+DOCUMENT DE COURS DE CE CHAPITRE — il commence presque toujours par une ligne « Prérequis : ... » qui liste \
+EXPLICITEMENT les notions attendues (et le chapitre antérieur où elles ont été vues) : si cette ligne apparaît \
+ci-dessous, base-toi DESSUS EN PRIORITÉ plutôt que d'inventer des prérequis toi-même :
 {document_excerpts}
 """
         except Exception as e:
-            print(f"[WARN] Recherche de contexte pour la remediation echouee: {e}")
+            print(f"[WARN] Recherche de contexte pour les prérequis echouee: {e}")
 
         system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
-Tu prépares un QCM diagnostique de remédiation pour un élève de {class_level} sur le chapitre « {chapter} », \
-AVANT qu'il ne continue le programme.
+Un élève de {class_level} va commencer le chapitre « {chapter} ». AVANT qu'il ne s'y lance, tu vérifies \
+qu'il maîtrise encore les notions prérequises — vues dans des chapitres ANTÉRIEURS, de cette année ou \
+d'une année précédente — dont ce chapitre a besoin. Tu ne testes JAMAIS le contenu du chapitre « {chapter} » \
+lui-même, seulement ce qui doit déjà être acquis avant de l'aborder.
 
+{MATH_FORMAT_INSTRUCTIONS}
+{previous_chapters_context}
 {context_block}
 {document_block}
+STRUCTURE ATTENDUE, PAR NOTION (dans cet ORDRE, jamais l'inverse) :
+1. Un RAPPEL DE COURS autonome sur la notion prérequise elle-même (définition, propriété ou méthode, \
++ un exemple chiffré rapide si utile) : l'élève doit pouvoir le lire et comprendre la notion SANS avoir \
+encore vu les exercices. Ce n'est ni un indice ni une reformulation de l'exercice — c'est un vrai rappel \
+de cours, comme une fiche de révision de 3 à 5 phrases.
+2. ENSUITE seulement, 1 à 2 exercices diagnostiques à choix multiples pour vérifier que ce rappel est \
+compris.
+
 CONTRAINTES :
-- Fournis EXACTEMENT 8 questions à choix multiples, couvrant les différentes notions du chapitre \
-(pas seulement la première partie), de la plus basique à la plus avancée.
-- Chaque question a EXACTEMENT 4 choix, une seule bonne réponse.
-- Chaque question porte sur une "notion" précise et courte (2-5 mots, ex: "Addition de fractions", \
-"Réciproque du théorème de Pythagore") qui servira à dire à l'élève quoi réviser s'il se trompe.
-- Pour chaque question, donne une "explication" courte de la bonne réponse, et un "conseil" de révision \
-utile UNIQUEMENT si l'élève se trompe (rappelle si besoin une notion de niveau inférieur nécessaire pour \
-comprendre celle-ci).
+- Identifie 3 à 5 notions prérequises indispensables pour ce chapitre (reste concentré sur ce qui est \
+vraiment nécessaire, pas un rappel exhaustif de toutes les années précédentes).
+- Pour chaque notion, 1 exercice diagnostique — 2 exercices seulement pour une notion plus fondamentale \
+ou plus fragile (voir consigne sur les questions récentes de l'élève ci-dessus). Au total, ne dépasse \
+JAMAIS 7 exercices.
+- Chaque exercice est COURT et ACCESSIBLE (application directe du rappel, sans piège ni astuce) : le but \
+est de vérifier que la notion est acquise, pas de la retester en profondeur ni d'évaluer le chapitre à venir.
+- Chaque exercice a EXACTEMENT 4 choix, une seule bonne réponse.
+- Le champ "notion" reprend le nom court du PRÉREQUIS (2-5 mots, ex: "Milieu d'un segment", "Angles \
+alternes-internes") — jamais une notion du chapitre « {chapter} » lui-même.
+- Pour chaque exercice, donne une "explication" courte confirmant la bonne réponse (1-2 phrases) — le \
+rappel de cours a déjà enseigné la notion, cette explication ne fait que confirmer, pas réexpliquer en entier.
+- Reste concis partout (rappel, exercice, explication) : pas de phrases superflues.
 - Contexte réaliste et local burkinabè quand c'est pertinent.
 - N'utilise AUCUN emoji.
 
 FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code) :
-{{"questions": [{{"notion": "...", "question": "...", "choix": ["...", "...", "...", "..."], \
-"reponse_correcte_index": 0, "explication": "...", "conseil": "..."}}, ...]}}
+{{"notions": [{{"notion": "...", "rappel": "...", "exercices": [{{"question": "...", \
+"choix": ["...", "...", "...", "..."], "reponse_correcte_index": 0, "explication": "..."}}, ...]}}, ...]}}
 """
 
-        user_message = f"Prépare le QCM de remédiation sur « {chapter} » pour un élève de {class_level}."
+        user_message = f"Prépare le diagnostic de prérequis avant le chapitre « {chapter} » pour un élève de {class_level}."
 
         response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}],
                                       max_tokens=config.MAX_TOKENS_REMEDIATION)
 
         if response:
-            questions = self._parse_remediation_json(response)
+            questions = self._parse_prerequis_json(response)
             if questions:
                 return questions
 
-        print("[WARN] Claude indisponible ou reponse non structuree pour la remediation, fallback local...")
-        return self._local_remediation(class_level, chapter)
+        print("[WARN] Claude indisponible ou reponse non structuree pour les prérequis, fallback local...")
+        return self._local_prerequis(class_level, chapter)
+
+    generate_remediation = generate_prerequis
 
     @staticmethod
-    def _parse_remediation_json(raw_text: str):
-        """Extrait et valide les 8 questions du QCM de remédiation renvoyées par Claude."""
+    def _parse_prerequis_json(raw_text: str):
+        """Extrait et valide les groupes {notion, rappel, exercices} du diagnostic de prérequis
+        renvoyé par Claude (voir FORMAT DE SORTIE dans generate_prerequis)."""
         text = raw_text.strip()
         text = re.sub(r"^```(json)?", "", text.strip(), flags=re.IGNORECASE).strip()
         text = re.sub(r"```$", "", text.strip()).strip()
@@ -836,44 +923,60 @@ FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte 
             except json.JSONDecodeError:
                 return None
 
-        raw_questions = data.get("questions")
-        if not isinstance(raw_questions, list):
+        raw_notions = data.get("notions")
+        if not isinstance(raw_notions, list):
             return None
 
-        questions = []
-        for item in raw_questions:
-            if not isinstance(item, dict):
+        notions = []
+        for notion_item in raw_notions:
+            if not isinstance(notion_item, dict):
                 continue
-            question = str(item.get("question", "")).strip()
-            notion = str(item.get("notion", "")).strip()
-            choix = item.get("choix")
-            correct_index = item.get("reponse_correcte_index")
-            if not question or not notion or not isinstance(choix, list) or len(choix) != 4:
+            notion = str(notion_item.get("notion", "")).strip()
+            rappel = str(notion_item.get("rappel", "")).strip()
+            raw_exercices = notion_item.get("exercices")
+            if not notion or not rappel or not isinstance(raw_exercices, list):
                 continue
-            if not isinstance(correct_index, int) or not (0 <= correct_index < 4):
-                continue
-            questions.append({
-                "notion": notion,
-                "question": question,
-                "choix": [str(c) for c in choix],
-                "reponse_correcte_index": correct_index,
-                "explication": str(item.get("explication", "")).strip(),
-                "conseil": str(item.get("conseil", "")).strip(),
-            })
 
-        return questions or None
+            exercices = []
+            for item in raw_exercices:
+                if not isinstance(item, dict):
+                    continue
+                question = str(item.get("question", "")).strip()
+                choix = item.get("choix")
+                correct_index = item.get("reponse_correcte_index")
+                if not question or not isinstance(choix, list) or len(choix) != 4:
+                    continue
+                if not isinstance(correct_index, int) or not (0 <= correct_index < 4):
+                    continue
+                exercices.append({
+                    "question": question,
+                    "choix": [str(c) for c in choix],
+                    "reponse_correcte_index": correct_index,
+                    "explication": str(item.get("explication", "")).strip(),
+                })
 
-    def _local_remediation(self, class_level: str, chapter: str) -> list:
-        """Fallback local pour le QCM de remédiation (utilisé uniquement si Claude est indisponible)."""
+            if exercices:
+                notions.append({"notion": notion, "rappel": rappel, "exercices": exercices})
+
+        return notions or None
+
+    _parse_remediation_json = _parse_prerequis_json
+
+    def _local_prerequis(self, class_level: str, chapter: str) -> list:
+        """Fallback local pour le diagnostic de prérequis (utilisé uniquement si Claude est indisponible)."""
         return [{
             "notion": chapter or "Notion générale",
-            "question": f"Le service Claude est momentanément indisponible : reviens plus tard pour un vrai "
-                         f"QCM de remédiation sur « {chapter} ».",
-            "choix": ["Réessayer plus tard", "-", "-", "-"],
-            "reponse_correcte_index": 0,
-            "explication": "Ce QCM est une version de secours, pas un vrai diagnostic.",
-            "conseil": "",
+            "rappel": f"Le service Claude est momentanément indisponible : reviens plus tard pour un vrai "
+                      f"diagnostic de prérequis sur « {chapter} ».",
+            "exercices": [{
+                "question": "Ceci est une version de secours, pas un vrai diagnostic.",
+                "choix": ["Réessayer plus tard", "-", "-", "-"],
+                "reponse_correcte_index": 0,
+                "explication": "",
+            }],
         }]
+
+    _local_remediation = _local_prerequis
 
     # ========================================================================
     # ACCUEIL PERSONNALISÉ (élève connecté avec de l'historique)
@@ -901,9 +1004,9 @@ FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte 
 
         system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
 Un élève nommé {username} vient de se connecter à l'application. Tu as accès à son historique \
-récent. Rédige un court message d'accueil personnalisé (3 à 5 phrases, en Markdown léger) qui :
-- Le salue par son prénom/pseudo de façon chaleureuse.
-- Mentionne de façon concrète 1 ou 2 lacunes réelles tirées de son historique ci-dessous (pas de généralités).
+récent. Rédige un court message d'accueil personnalisé (DEUX PHRASES MAXIMUM, en Markdown léger) qui :
+- Salue-le par son prénom/pseudo de façon chaleureuse et mentionne de façon concrète 1 lacune réelle \
+tirée de son historique ci-dessous (pas de généralités).
 - Termine par UNE suggestion précise et actionnable pour cette session (ex: reprendre tel chapitre, \
 refaire un QCM de remédiation sur telle notion).
 - Si l'historique ne montre AUCUNE lacune claire, félicite-le pour sa progression et propose \
@@ -944,133 +1047,6 @@ Ne mets pas de titre Markdown (##), juste le message directement, comme si tu pa
             f"Content de te revoir, {username} ! Prêt à continuer là où tu t'es arrêté ?\n\n"
             f"*(Le service Claude est momentanément indisponible, ceci est une version de secours.)*"
         )
-
-    def _local_basics(self, class_level: str, chapter: str) -> str:
-        """Fallback local pour la fiche 'Pour bien démarrer' (Claude indisponible)."""
-        chapter_lower = chapter.lower()
-        question_stub = f"les bases de {chapter}" if chapter else "les mathématiques"
-        knowledge = self._get_knowledge(chapter_lower, "", question_stub, class_level, chapter) if chapter else None
-
-        intro = (
-            f'Voici de quoi bien démarrer le chapitre "{chapter}"' + (f" en {class_level}." if class_level else ".")
-            if chapter else
-            "Voici quelques bases générales pour bien démarrer en mathématiques."
-        )
-
-        base = f"""
-## Pour bien démarrer
-
-{intro}
-
-**Méthode générale :**
-1. Relis les définitions et le vocabulaire du chapitre avant de commencer.
-2. Repère les formules essentielles et recopie-les sur une fiche.
-3. Fais d'abord un exercice simple d'application directe.
-4. Vérifie toujours ton résultat (ordre de grandeur, unité, sens).
-
-*(Le service Claude est momentanément indisponible, ceci est une version de secours.)*
-"""
-        if knowledge:
-            return knowledge + "\n" + base
-        return base
-
-    # ========================================================================
-    # RÉSUMÉ (session ou chapitre)
-    # ========================================================================
-
-    def generate_summary(self, history: list, class_level: str = "", chapter: str = "") -> str:
-        """Résume soit la conversation en cours (si elle existe), soit les points essentiels
-        du chapitre choisi (si aucune conversation n'a encore eu lieu)."""
-
-        real_turns = [t for t in (history or []) if t.get("role") in ("user", "assistant") and t.get("content")]
-
-        if real_turns:
-            return self._summarize_session(real_turns, class_level, chapter)
-        if chapter:
-            return self._summarize_chapter(class_level, chapter)
-        return (
-            "Il n'y a encore rien à résumer : pose une question ou choisis un chapitre, "
-            "et je pourrai t'en donner les points essentiels."
-        )
-
-    def _summarize_session(self, turns: list, class_level: str, chapter: str) -> str:
-        convo_text = "\n".join(
-            f"{'Élève' if t['role'] == 'user' else 'Prof Amira'} : {t['content']}" for t in turns
-        )
-
-        system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
-On te donne une conversation entre toi et un élève. Résume cette séance pour l'élève.
-
-FORMAT DE SORTIE — Markdown structuré avec exactement ces sections :
-## Points essentiels vus dans cette séance
-## Formules et méthodes à retenir
-## Ce qu'il reste à travailler
-
-RÈGLES :
-- Sois synthétique : listes à puces courtes, pas de blabla, pas de répétition mot à mot des réponses.
-- Formules en LaTeX (`$...$` ou `$$...$$`) si nécessaire.
-- Ton encourageant.
-
-{NO_EMOJI_INSTRUCTIONS}"""
-
-        user_message = (
-            f"Classe : {class_level or 'non précisée'}\n"
-            f"Chapitre : {chapter or 'non précisé'}\n\n"
-            f"Conversation à résumer :\n{convo_text[:6000]}\n\n"
-            "Rédige le résumé de cette séance."
-        )
-
-        response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}],
-                                      max_tokens=config.MAX_TOKENS_SUMMARY)
-        if response:
-            return response
-
-        return self._local_summarize_session(turns)
-
-    def _summarize_chapter(self, class_level: str, chapter: str) -> str:
-        system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. \
-Un élève de {class_level or 'Burkina Faso'} n'a pas encore posé de question, mais veut un résumé \
-des points essentiels du chapitre « {chapter} » avant de commencer à réviser ou s'entraîner.
-
-FORMAT DE SORTIE — Markdown structuré avec exactement ces sections :
-## Points essentiels du chapitre
-## Formules à connaître par cœur
-## Ce qu'on attend de toi à l'examen
-
-RÈGLES :
-- Sois synthétique : listes à puces courtes.
-- Formules en LaTeX (`$...$` ou `$$...$$`) si nécessaire.
-- Ton encourageant.
-
-{NO_EMOJI_INSTRUCTIONS}"""
-
-        user_message = f"Classe : {class_level or 'non précisée'}\nChapitre : {chapter}\n\nRédige ce résumé."
-
-        response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}],
-                                      max_tokens=config.MAX_TOKENS_SUMMARY)
-        if response:
-            return response
-
-        return self._local_basics(class_level, chapter)
-
-    @staticmethod
-    def _local_summarize_session(turns: list) -> str:
-        """Fallback local : liste simplement les questions posées par l'élève (Claude indisponible)."""
-        questions = [t["content"] for t in turns if t["role"] == "user"]
-        if not questions:
-            return "Pas encore assez d'échanges pour faire un résumé."
-
-        points = "\n".join(f"- {q}" for q in questions[-8:])
-        return f"""
-## Résumé de la séance
-
-**Questions abordées :**
-{points}
-
-*Relis les réponses ci-dessus pour retrouver le détail de chaque explication.*
-
-*(Le service Claude est momentanément indisponible, ceci est une version de secours.)*
-"""
 
     # ========================================================================
     # GÉNÉRATION D'EXERCICES (structurés : énoncé / indices / solution)
@@ -1145,7 +1121,7 @@ RÈGLES :
                 if chapter:
                     context_nodes = self._retrieve_with_filters(
                         chapter,
-                        [ExactMatchFilter(key="class", value=class_level), ExactMatchFilter(key="chapter", value=chapter)],
+                        [self._exact_filter("class", class_level), self._exact_filter("chapter", chapter)],
                         top_k=4,
                     )
                 else:
@@ -1249,22 +1225,21 @@ CONTRAINTES :
 - Niveau de difficulté : {difficulty_label}{olympiad_instructions}
 - Contexte réaliste et local burkinabè (marché, agriculture, élevage, artisanat, construction, transport en commun...)
 - Fournis exactement 1 indice qui guide SANS donner le résultat.
-- La solution doit être détaillée étape par étape, avec les formules en LaTeX (`$...$` ou `$$...$$`) : tout symbole \
-mathématique (∞, ∈, ≤, →...) en LaTeX (`\\infty`, `\\in`...), jamais épelé en toutes lettres (écris $+\\infty$, \
-jamais « + infini »).
-- Mets la réponse finale bien en évidence, séparément.
+- NE RÉDIGE PAS de solution ni de réponse finale ici — uniquement l'énoncé et l'indice (la correction est générée \
+séparément, à la demande de l'élève, voir generate_exercise_solution). Formule quand même l'énoncé de façon \
+suffisamment précise et autonome pour qu'une solution complète et non ambiguë puisse en être déduite plus tard.
 - OBLIGATOIRE si l'exercice implique une figure géométrique, même indirectement (triangle, champ/terrain rectangulaire, \
 cercle, angle, repère, configuration de Thalès/Pythagore, solide...) : remplis le champ "figure" avec le schéma \
 correspondant. Sinon mets "figure" à null. N'essaie JAMAIS de représenter une figure avec des caractères ASCII \
-(`|`, `/`, `\\`, `-`) dans "enonce" ou "solution" : uniquement le champ "figure" prévu à cet effet (ce champ est \
-un mécanisme différent des blocs ```figure``` du chat : ici toujours un objet JSON dédié, jamais du texte).
+(`|`, `/`, `\\`, `-`) dans "enonce" : uniquement le champ "figure" prévu à cet effet (ce champ est un mécanisme \
+différent des blocs ```figure``` du chat : ici toujours un objet JSON dédié, jamais du texte).
+{MATH_FORMAT_INSTRUCTIONS}
 
 {NO_EMOJI_INSTRUCTIONS}
 
 FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code), \
 exactement sous cette forme :
-{{"chapitre": "{chapter if chapter else '...'}", "enonce": "...", "indices": ["..."], "solution": "...", \
-"reponse_finale": "...", "figure": null}}
+{{"chapitre": "{chapter if chapter else '...'}", "enonce": "...", "indices": ["..."], "figure": null}}
 
 Si présente, la "figure" doit être un OBJET JSON (pas une chaîne de caractères échappée) suivant exactement ce schéma :
 {{"points": [{{"id": "A", "x": 0, "y": 0}}, ...], "segments": [{{"from": "A", "to": "B"}}, ...], \
@@ -1301,6 +1276,103 @@ qu'il annote (jamais pile sur un segment ni à l'intérieur d'un polygone rempli
 
         print("[WARN] Claude indisponible ou reponse non structuree pour l'exercice, fallback local...")
         return self._local_generate_exercise(class_level, chapter or self._default_chapter(class_level), difficulty)
+
+    @staticmethod
+    def _figure_as_text(figure: Optional[dict]) -> str:
+        """Résumé textuel compact d'une figure déjà générée (voir generate_exercise), pour que
+        generate_exercise_solution puisse s'y référer sans avoir à la regénérer ni à la deviner."""
+        if not figure:
+            return ""
+        points = ", ".join(f"{p.get('id')}({p.get('x')},{p.get('y')})" for p in figure.get("points") or [])
+        parts = [f"points {points}"] if points else []
+        if figure.get("segments"):
+            parts.append("segments " + ", ".join(f"[{s.get('from')}{s.get('to')}]" for s in figure["segments"]))
+        if figure.get("circles"):
+            parts.append("cercle(s) " + ", ".join(f"centre {c.get('center')} rayon {c.get('radius')}" for c in figure["circles"]))
+        if figure.get("labels"):
+            parts.append("annotations " + ", ".join(f'"{l.get("text")}"' for l in figure["labels"]))
+        return "Figure de l'énoncé (coordonnées abstraites, pour information) : " + " ; ".join(parts) if parts else ""
+
+    def generate_exercise_solution(self, class_level: str, chapter: str, difficulty: int,
+                                    enonce: str, indices: Optional[list] = None,
+                                    figure: Optional[dict] = None) -> dict:
+        """Génère la correction (solution détaillée + réponse finale) d'un exercice DÉJÀ généré
+        par generate_exercise, à la demande de l'élève (bouton "Voir la solution détaillée" côté
+        frontend) — séparé de la génération de l'énoncé pour deux raisons : (1) la plupart des
+        élèves qui génèrent un exercice ne demandent pas forcément la correction tout de suite,
+        générer les deux d'un coup était donc souvent du travail perdu ; (2) réunir énoncé ET
+        solution détaillée dans le même appel forçait à partager un seul budget de tokens entre
+        les deux — sur un exercice de Terminale (raisonnement long, rédaction dense), la part
+        "solution" pouvait à elle seule dépasser ce budget partagé, tronquant la réponse JSON et
+        déclenchant un repli silencieux vers un exercice générique (symptôme observé : "l'exercice
+        ne vient pas vraiment" en Terminale). Ici la solution a son propre budget dédié, donc plus
+        de contention avec l'énoncé."""
+        difficulty_label = STAR_DIFFICULTY_LABELS.get(difficulty, STAR_DIFFICULTY_LABELS[2])
+        indice_txt = f"\nIndice déjà donné à l'élève : {indices[0]}" if indices else ""
+        figure_txt = self._figure_as_text(figure)
+
+        system_prompt = f"""Tu es « Prof Amira », professeur de mathématiques au Burkina Faso. Un élève de \
+{class_level} a déjà reçu l'énoncé suivant (chapitre « {chapter} », niveau {difficulty_label}) et souhaite \
+maintenant en voir la correction détaillée.
+
+ÉNONCÉ DÉJÀ DONNÉ À L'ÉLÈVE (ne le répète pas, résous-le directement) :
+{enonce}
+{indice_txt}
+{f"{chr(10)}{figure_txt}" if figure_txt else ""}
+
+CONTRAINTES :
+- Rédige une solution détaillée, étape par étape, cohérente avec CET énoncé précis (pas un autre).
+- Mets la réponse finale bien en évidence, séparément.
+{MATH_FORMAT_INSTRUCTIONS}
+
+{NO_EMOJI_INSTRUCTIONS}
+
+FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, pas de bloc de code) :
+{{"solution": "...", "reponse_finale": "..."}}
+"""
+        user_message = "Rédige la correction détaillée de cet exercice."
+
+        max_tokens = config.MAX_TOKENS_EXERCISE_OLYMPIAD if difficulty == 5 else config.MAX_TOKENS_EXERCISE
+        response = self._call_claude(system_prompt, [{"role": "user", "content": user_message}], max_tokens=max_tokens)
+
+        if response:
+            parsed = self._parse_exercise_solution_json(response)
+            if parsed:
+                return parsed
+            print(f"[WARN] JSON de correction non parsable ({len(response)} caracteres) : "
+                  f"debut={response[:150]!r} fin={response[-150:]!r}")
+        else:
+            print("[WARN] _call_claude a renvoye une reponse vide pour la correction.")
+
+        return {
+            "solution": "Le service est momentanément indisponible : reviens plus tard pour voir la correction.",
+            "reponse_finale": "",
+        }
+
+    @staticmethod
+    def _parse_exercise_solution_json(raw_text: str) -> Optional[dict]:
+        text = raw_text.strip()
+        text = re.sub(r"^```(json)?", "", text.strip(), flags=re.IGNORECASE).strip()
+        text = re.sub(r"```$", "", text.strip()).strip()
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        candidate = text[start:end + 1]
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                data = json.loads(_repair_latex_json_escapes(candidate))
+            except json.JSONDecodeError:
+                return None
+
+        solution = str(data.get("solution", "")).strip()
+        if not solution:
+            return None
+        return {"solution": solution, "reponse_finale": str(data.get("reponse_finale", "")).strip()}
 
     @staticmethod
     def _parse_exercise_json(raw_text: str, difficulty: int = 2):
@@ -1362,10 +1434,6 @@ qu'il annote (jamais pile sur un segment ni à l'intérieur d'un polygone rempli
             return {"enonce": enonce, "indices": [], "solution": "", "reponse_finale": "", "figure": None,
                     "qcm": qcm}, claude_chapter
 
-        solution = str(data.get("solution", "")).strip()
-        if not solution:
-            return None, None
-
         indices = data.get("indices", [])
         if not isinstance(indices, list):
             indices = [str(indices)]
@@ -1374,10 +1442,15 @@ qu'il annote (jamais pile sur un segment ni à l'intérieur d'un polygone rempli
         if not isinstance(figure, dict) or not isinstance(figure.get("points"), list) or not figure.get("points"):
             figure = None
 
+        # La solution est désormais générée séparément, à la demande (voir
+        # generate_exercise_solution) : on ne l'exige plus ici (c'était la cause du bug
+        # Terminale, la réponse combinée dépassant parfois le budget de tokens et laissant
+        # "solution" vide, ce qui faisait rejeter tout l'exercice). On la récupère quand même
+        # si le modèle en a fourni une, pour rester tolérant aux anciennes réponses.
         return {
             "enonce": enonce,
             "indices": [str(i) for i in indices][:1],
-            "solution": solution,
+            "solution": str(data.get("solution", "")).strip(),
             "reponse_finale": str(data.get("reponse_finale", "")).strip(),
             "figure": figure,
             "qcm": None

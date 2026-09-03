@@ -1,10 +1,15 @@
 import React from "react"
+import { useIsMobile } from "../lib/useMediaQuery"
 
 /**
  * Fond décoratif : quelques formes floues et colorées, fixes derrière le contenu.
  * Purement visuel (pointer-events-none), s'adapte au thème clair/sombre via les couleurs daisyUI.
+ * Ne se monte pas sous 768px : animation continue invisible pour l'utilisateur mais coûteuse en
+ * batterie/GPU sur de l'Android bas de gamme (voir RAPPORT_MOBILE.md §9).
  */
 export default function BackgroundBlobs() {
+  const isMobile = useIsMobile()
+  if (isMobile) return null
   return (
     <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
       <div

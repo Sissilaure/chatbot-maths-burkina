@@ -62,6 +62,13 @@ function normalizeUnsupportedColors(clonedDoc) {
     return prop.startsWith("webkit") ? "-" + kebab : kebab
   }
 
+  // Convertit chaque fonction de couleur non supportée TROUVÉE À L'INTÉRIEUR d'une valeur
+  // composite (ex: les arrêts de couleur d'un `linear-gradient(...)`) — contrairement à
+  // toSafeColor, qui ne sait traiter qu'une valeur de couleur seule en entrée.
+  function replaceUnsupportedColorsInside(value) {
+    return value.replace(/(?:oklch|oklab|lch|lab|color)\([^()]*\)/gi, (match) => toSafeColor(match) || match)
+  }
+
   clonedDoc.querySelectorAll("*").forEach((el) => {
     if (!el.style) return
     const computed = view.getComputedStyle(el)
@@ -78,9 +85,13 @@ function normalizeUnsupportedColors(clonedDoc) {
       }
     }
 
+    // Convertir les arrêts de couleur plutôt que supprimer tout le dégradé (ancien comportement) :
+    // les bulles de message "élève" (fond dégradé bg-gradient-to-br, texte clair par-dessus)
+    // devenaient invisibles — texte clair sur fond blanc par défaut — une fois le dégradé annulé,
+    // symptôme "la question n'apparaît pas" observé dans les PDF exportés.
     const backgroundImage = computed.backgroundImage
     if (backgroundImage && backgroundImage !== "none" && UNSUPPORTED_COLOR_FN.test(backgroundImage)) {
-      el.style.setProperty("background-image", "none", "important")
+      el.style.setProperty("background-image", replaceUnsupportedColorsInside(backgroundImage), "important")
     }
   })
 }
@@ -148,6 +159,12 @@ export async function exportNodeToPDF(node, { filename = "chatmaths.pdf", title 
 
   const imgWidth = contentWidth
   const scaleFactor = canvas.width / imgWidth
+  // Capacité d'une page PLEINE (sans le titre/sous-titre, qui ne réduisent que la 1ère page) :
+  // sert à décider si reculer la coupure avant un bloc est utile (voir straddling ci-dessous) —
+  // sans cette borne, un bloc plus haut qu'une page entière (une longue réponse) faisait reculer
+  // la coupure jusqu'à tout juste après le séparateur de date, laissant la quasi-totalité de la
+  // 1ère page vide : reculer ne sert à rien si le bloc ne tiendrait de toute façon sur AUCUNE page.
+  const fullPageCapacityPx = Math.floor((pageHeight - margin * 2) * scaleFactor)
 
   // Boucle en pixels entiers (espace du canvas), pas en points PDF flottants : une dérive
   // d'arrondi sur `remainingHeight` pouvait faire passer la dernière tranche en dessous de 0,
@@ -163,11 +180,13 @@ export async function exportNodeToPDF(node, { filename = "chatmaths.pdf", title 
     const availableHeight = pageHeight - cursorY - margin
     let sliceHeightPx = Math.max(1, Math.min(Math.floor(availableHeight * scaleFactor), canvas.height - sourceY))
 
-    // Si la coupure naturelle tombe au milieu d'un bloc (et que ce bloc tient dans une page
-    // pleine), on recule la fin de page jusqu'à juste avant ce bloc plutôt que de le couper.
+    // Si la coupure naturelle tombe au milieu d'un bloc qui tiendrait sur une page pleine, on
+    // recule la fin de page jusqu'à juste avant ce bloc plutôt que de le couper — mais seulement
+    // dans ce cas : un bloc plus grand qu'une page entière sera de toute façon coupé tôt ou tard,
+    // autant que ce soit ici plutôt que de gâcher toute la page courante à l'éviter en vain.
     const candidateCut = sourceY + sliceHeightPx
     const straddling = blockBoundaries.find(
-      (b) => b.top > sourceY && b.top < candidateCut && b.bottom > candidateCut
+      (b) => b.top > sourceY && b.top < candidateCut && b.bottom > candidateCut && b.bottom - b.top <= fullPageCapacityPx
     )
     if (straddling) {
       sliceHeightPx = Math.max(1, straddling.top - sourceY)
@@ -179,9 +198,13 @@ export async function exportNodeToPDF(node, { filename = "chatmaths.pdf", title 
     const ctx = sliceCanvas.getContext("2d")
     ctx.drawImage(canvas, 0, sourceY, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx)
 
-    const sliceData = sliceCanvas.toDataURL("image/png")
+    // JPEG plutôt que PNG : jsPDF réembarque nos tranches en bitmap non compressé quand on lui
+    // donne du PNG (une tranche pleine page pesait ~12 Mo, un export de 3 pages ~25 Mo au total).
+    // Fond opaque garanti par html2canvas (backgroundColor: "#ffffff" ci-dessus) : la transparence
+    // du PNG n'est jamais utilisée, JPEG (sans canal alpha) ne perd donc rien d'utile.
+    const sliceData = sliceCanvas.toDataURL("image/jpeg", 0.92)
     const sliceHeightPt = sliceHeightPx / scaleFactor
-    pdf.addImage(sliceData, "PNG", margin, cursorY, imgWidth, sliceHeightPt)
+    pdf.addImage(sliceData, "JPEG", margin, cursorY, imgWidth, sliceHeightPt)
 
     sourceY += sliceHeightPx
     firstPage = false
@@ -193,7 +216,7 @@ export async function exportNodeToPDF(node, { filename = "chatmaths.pdf", title 
   for (let i = 1; i <= pageCount; i++) {
     pdf.setPage(i)
     pdf.text(
-      `Prof Amira — page ${i}/${pageCount}`,
+      `Prof Amira, page ${i}/${pageCount}`,
       margin,
       pageHeight - 16
     )

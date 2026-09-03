@@ -20,8 +20,11 @@ COPY . .
 
 # Le modèle d'embeddings HuggingFace (sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2)
 # est téléchargé au premier import s'il n'est pas déjà en cache ; on le télécharge ici pour qu'il
-# soit déjà présent dans l'image plutôt qu'à chaque démarrage à froid du conteneur.
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
+# soit déjà présent dans l'image plutôt qu'à chaque démarrage à froid du conteneur. Le
+# `cache_folder` DOIT être identique à EMBED_CACHE_DIR dans rag_system.py, sinon le conteneur
+# cherche le modèle ailleurs au démarrage et retélécharge (échoue si le réseau sortant est
+# indisponible à ce moment-là, au lieu d'utiliser ce cache déjà présent dans l'image).
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', cache_folder='/app/hf_cache')"
 
 # Railway (et la plupart des PaaS) injectent PORT dynamiquement ; 8000 est un repli pour un usage
 # local (docker run sans -e PORT).
