@@ -61,11 +61,15 @@ export async function getChapters(classCode) {
  * @param {Array<{role: 'user'|'assistant', content: string}>} history - derniers échanges pour la mémoire de conversation
  * @param {string|null} conversationId - si fourni ET l'appelant authentifié, le backend persiste
  *   lui-même l'échange dans cette conversation (voir add_exchange côté serveur).
+ * @param {string|null} token - sans lui, le backend traite TOUJOURS l'appel comme un invité (voir
+ *   auth.get_current_user_optional côté serveur) : ni persistance, ni classe imposée par le
+ *   compte, même pour un élève connecté. Facultatif : App.jsx passe getToken(), qui vaut null en
+ *   mode invité — le comportement invité reste inchangé dans ce cas.
  */
-export async function askQuestion(question, classCode, chapter, history = [], conversationId = null) {
+export async function askQuestion(question, classCode, chapter, history = [], conversationId = null, token = null) {
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: token ? authHeaders(token) : { "Content-Type": "application/json" },
     body: JSON.stringify({
       question,
       class_level: classCode,
@@ -122,19 +126,22 @@ function mapSources(sources, classCode, chapter) {
  * @param {string} chapter
  * @param {Array<{role: 'user'|'assistant', content: string}>} history
  * @param {string|null} conversationId
- * @param {{onDelta?: (text: string) => void, onDone?: (result: {sources: object[], fromRag: boolean}) => void, onError?: (err: Error) => void, onAbort?: () => void, signal?: AbortSignal}} callbacks
+ * @param {{onDelta?: (text: string) => void, onDone?: (result: {sources: object[], fromRag: boolean}) => void, onError?: (err: Error) => void, onAbort?: () => void, signal?: AbortSignal, token?: string|null}} callbacks
  *   `err` passé à onError porte `.status` et, pour un 428, `.reason` ("consent_required" |
  *   "profile_incomplete") — voir apiError() ci-dessus. `signal` (bouton stop, voir ChatInput.jsx) :
  *   un abort en cours de flux appelle `onAbort` (le texte déjà reçu via onDelta reste affiché tel
- *   quel, ce n'est pas une vraie erreur) plutôt que `onError`.
+ *   quel, ce n'est pas une vraie erreur) plutôt que `onError`. `token` : sans lui, le backend
+ *   traite TOUJOURS l'appel comme un invité (voir askQuestion ci-dessus pour le détail) — même
+ *   pour un élève connecté, sans conséquence pour un invité (token absent dans ce cas).
  */
 export async function askQuestionStream(
-  question, classCode, chapter, history = [], conversationId = null, { onDelta, onDone, onError, onAbort, signal } = {}
+  question, classCode, chapter, history = [], conversationId = null,
+  { onDelta, onDone, onError, onAbort, signal, token = null } = {}
 ) {
   try {
     const res = await fetch(`${API_BASE}/api/chat/stream`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: token ? authHeaders(token) : { "Content-Type": "application/json" },
       body: JSON.stringify({
         question,
         class_level: classCode,
@@ -201,10 +208,10 @@ export async function askQuestionStream(
   }
 }
 
-export async function simplifyResponse(question, previousResponse, classCode, chapter, conversationId = null, signal) {
+export async function simplifyResponse(question, previousResponse, classCode, chapter, conversationId = null, signal, token = null) {
   const res = await fetch(`${API_BASE}/api/simplify`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: token ? authHeaders(token) : { "Content-Type": "application/json" },
     body: JSON.stringify({
       answer: previousResponse,
       class_level: classCode,
@@ -228,10 +235,10 @@ export async function simplifyResponse(question, previousResponse, classCode, ch
  * @param {Array<{role: 'user'|'assistant', content: string}>} history
  * @param {string|null} conversationId
  */
-export async function generateExercise(classCode, chapter, difficulty = null, history = [], conversationId = null, signal) {
+export async function generateExercise(classCode, chapter, difficulty = null, history = [], conversationId = null, signal, token = null) {
   const res = await fetch(`${API_BASE}/api/exercise`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: token ? authHeaders(token) : { "Content-Type": "application/json" },
     body: JSON.stringify({ class_level: classCode, chapter, difficulty, history, conversation_id: conversationId }),
     signal,
   })
@@ -245,10 +252,10 @@ export async function generateExercise(classCode, chapter, difficulty = null, hi
  * partagé entre énoncé et solution, faisant échouer la génération. `enonce`/`indices`/`figure`
  * sont ceux de l'exercice déjà affiché, pour que la correction porte bien sur CE même énoncé.
  */
-export async function generateExerciseSolution(classCode, chapter, difficulty, enonce, indices = [], figure = null) {
+export async function generateExerciseSolution(classCode, chapter, difficulty, enonce, indices = [], figure = null, token = null) {
   const res = await fetch(`${API_BASE}/api/exercise/solution`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: token ? authHeaders(token) : { "Content-Type": "application/json" },
     body: JSON.stringify({ class_level: classCode, chapter, difficulty, enonce, indices, figure }),
   })
   return handleJson(res, "Erreur lors de la génération de la correction")
@@ -264,7 +271,7 @@ export async function generateExerciseSolution(classCode, chapter, difficulty, e
  * `conversationId` (facultatif) : persistance serveur, envoyée en champ de formulaire.
  * Envoyés en champs de formulaire (pas en query string, qui a une limite de taille).
  */
-export async function explainExercisePhoto(file, classCode = "", chapter = "", prompt = "", history = [], conversationId = null, signal) {
+export async function explainExercisePhoto(file, classCode = "", chapter = "", prompt = "", history = [], conversationId = null, signal, token = null) {
   const params = new URLSearchParams()
   if (classCode) params.set("class_level", classCode)
   if (chapter) params.set("chapter", chapter)
@@ -277,6 +284,9 @@ export async function explainExercisePhoto(file, classCode = "", chapter = "", p
 
   const res = await fetch(`${API_BASE}/api/exercise/photo?${params.toString()}`, {
     method: "POST",
+    // Pas de authHeaders() ici : son "Content-Type": "application/json" écraserait celui, en
+    // multipart avec la bonne frontière, que le navigateur pose lui-même pour un FormData.
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: formData,
     signal,
   })
@@ -287,10 +297,10 @@ export async function explainExercisePhoto(file, classCode = "", chapter = "", p
 /**
  * QCM diagnostique de prérequis (8 questions) sur le chapitre choisi.
  */
-export async function generatePrerequis(classCode, chapter, history = [], conversationId = null, signal) {
+export async function generatePrerequis(classCode, chapter, history = [], conversationId = null, signal, token = null) {
   const res = await fetch(`${API_BASE}/api/prerequis`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: token ? authHeaders(token) : { "Content-Type": "application/json" },
     body: JSON.stringify({ class_level: classCode, chapter, history, conversation_id: conversationId }),
     signal,
   })

@@ -619,6 +619,63 @@ def test_students_cannot_access_each_others_conversations(unique_username):
     assert own_res.json()["messages"] == []
 
 
+def test_chat_stream_persists_message_when_token_is_sent(monkeypatch, unique_username):
+    """Régression du bug corrigé côté frontend (api.js::askQuestionStream n'envoyait jamais le
+    token d'authentification, même pour un élève connecté — voir App.jsx) : sans token,
+    get_current_user_optional renvoie toujours None, et _persist_exchange_best_effort ne
+    sauvegarde donc jamais rien, silencieusement. Ce test appelle /api/chat/stream avec un VRAI
+    token (comme le fait désormais App.jsx) et vérifie que le message apparaît bien ensuite dans
+    l'historique — le chemin que le bug rendait mort."""
+    chapitre = "Théorème de Thalès et sa réciproque"
+    token = _register(unique_username, class_code="3ème").json()["token"]
+    headers = _auth_headers(token)
+
+    conv_id = client.post(
+        "/api/conversations", json={"class_level": "3ème", "chapter": chapitre},
+        headers=headers,
+    ).json()["id"]
+
+    def fake_stream_claude(*args, **kwargs):
+        yield "Bon"
+        yield "jour"
+
+    monkeypatch.setattr(main.rag_system, "_stream_claude", fake_stream_claude)
+    monkeypatch.setattr(main.rag_system, "_retrieve_with_filters", lambda *a, **k: [])
+
+    res = client.post(
+        "/api/chat/stream",
+        json={
+            "question": "Bonjour", "class_level": "3ème", "chapter": chapitre,
+            "history": [], "conversation_id": conv_id,
+        },
+        headers=headers,
+    )
+    assert res.status_code == 200
+    assert '"done": true' in res.text  # flux SSE bien allé jusqu'au bout
+
+    detail = client.get(f"/api/conversations/{conv_id}", headers=headers)
+    messages = detail.json()["messages"]
+    assert len(messages) == 2
+    assert messages[0]["role"] == "user" and messages[0]["content"] == "Bonjour"
+    assert messages[1]["role"] == "assistant" and messages[1]["content"] == "Bonjour"
+
+
+def test_chat_stream_does_not_persist_without_token(monkeypatch):
+    """Un invité (pas de token) continue de fonctionner exactement comme avant ce correctif :
+    aucune conversation à alimenter, aucune tentative de persistance — juste une réponse."""
+    def fake_stream_claude(*args, **kwargs):
+        yield "Salut"
+
+    monkeypatch.setattr(main.rag_system, "_stream_claude", fake_stream_claude)
+
+    res = client.post(
+        "/api/chat/stream",
+        json={"question": "Salut", "class_level": "", "chapter": "", "history": [], "conversation_id": None},
+    )
+    assert res.status_code == 200
+    assert "Salut" in res.text
+
+
 def test_admin_demographics_requires_decideur_auth():
     assert client.get("/api/admin/demographics").status_code == 401
 

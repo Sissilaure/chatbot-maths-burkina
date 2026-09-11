@@ -310,11 +310,22 @@ export default function Sidebar({
         />
       )}
 
-      {!user && (
-        <Card className="p-4">
-          <SectionLabel icon={GraduationCap} color="bg-primary/15 text-primary">
-            Ma classe
-          </SectionLabel>
+      <Card className="p-4">
+        <SectionLabel icon={GraduationCap} color="bg-primary/15 text-primary">
+          Ma classe
+        </SectionLabel>
+        {user ? (
+          // Compte connecté : la classe est fixée au profil (app.users.class_code, voir
+          // _resolve_class_level côté backend, qui l'impose désormais quoi que la sidebar
+          // affiche) — même traitement que MobileSettingsTab, pour ne pas montrer un menu actif
+          // qui n'aurait plus aucun effet une fois envoyé au serveur. onEditProfile (pas
+          // goToClassEdit, propre au flux mobile via ProfilePanel/onglet Historique, absent de
+          // ce rendu bureau) : ouvre EditProfileSheet, qui permet bien de modifier class_code.
+          <ReadOnlyClassRow
+            classeNom={classes.find((c) => c.code === classCode)?.name || classCode}
+            onChangeClick={onEditProfile}
+          />
+        ) : (
           <select
             className="select select-bordered w-full rounded-xl bg-base-100"
             value={classCode}
@@ -327,8 +338,8 @@ export default function Sidebar({
               </option>
             ))}
           </select>
-        </Card>
-      )}
+        )}
+      </Card>
 
       <Card className="p-4">
         <SectionLabel icon={BookOpen} color="bg-secondary/15 text-secondary">

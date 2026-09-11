@@ -614,7 +614,7 @@ export default function App() {
     if (activePhoto) {
       setLoading(true)
       try {
-        const answer = await explainExercisePhoto(activePhoto, sendClassCode, sendChapitre, q, history, convId, controller.signal)
+        const answer = await explainExercisePhoto(activePhoto, sendClassCode, sendChapitre, q, history, convId, controller.signal, getToken())
         pushBotMessage(answer, [], "chat")
         setLastQuestion(q)
         setLastAnswer(answer)
@@ -641,6 +641,7 @@ export default function App() {
     try {
       await askQuestionStream(q, sendClassCode, sendChapitre, history, convId, {
         signal: controller.signal,
+        token: getToken(),
         onDelta: (delta) => {
           if (firstChunk) {
             setLoading(false)
@@ -701,6 +702,7 @@ export default function App() {
     // remplace juste ce qui est affiché à l'écran (voir MessageBubble::onRegenerate).
     let fullText = ""
     await askQuestionStream(userMsg.text, classCode, chapitre, history, null, {
+      token: getToken(),
       onDelta: (delta) => {
         fullText += delta
         patchMessageAt(index, { text: fullText })
@@ -735,7 +737,7 @@ export default function App() {
     setSimplifyingIndex(index)
     try {
       const convId = await ensureConversation(questionForThisMessage).catch(() => null)
-      const simplified = await simplifyResponse(questionForThisMessage, target.text, classCode, chapitre, convId)
+      const simplified = await simplifyResponse(questionForThisMessage, target.text, classCode, chapitre, convId, undefined, getToken())
       pushBotMessage(simplified, [], "simplify")
       setLastAnswer(simplified)
       recordStruggle(classCode, chapitre, questionForThisMessage, classeNom)
@@ -772,7 +774,7 @@ export default function App() {
           return { role: "assistant", content: `Exercice déjà proposé dans cette conversation : ${summary}` }
         })
       const history = [...buildHistoryUpTo(messages), ...priorExercises]
-      const exercise = await generateExercise(classCode, chapitre, difficulty, history, convId, controller.signal)
+      const exercise = await generateExercise(classCode, chapitre, difficulty, history, convId, controller.signal, getToken())
       pushExerciseMessage(exercise)
       recordTopicVisit(classCode, exercise.chapter || chapitre, classeNom)
       refreshProfile()
@@ -794,7 +796,7 @@ export default function App() {
   async function handleFetchExerciseSolution(exercise) {
     return generateExerciseSolution(
       exercise.class_level, exercise.chapter, exercise.difficulty,
-      exercise.enonce, exercise.indices, exercise.figure
+      exercise.enonce, exercise.indices, exercise.figure, getToken()
     )
   }
 
@@ -819,7 +821,7 @@ export default function App() {
     const convId = await ensureConversation(displayText).catch(() => null)
     try {
       const toSend = isImage ? await compressImageFile(file) : file
-      const answer = await explainExercisePhoto(toSend, classCode, chapitre, accompanyingPrompt, [], convId)
+      const answer = await explainExercisePhoto(toSend, classCode, chapitre, accompanyingPrompt, [], convId, undefined, getToken())
       pushBotMessage(answer, [], "chat")
       setLastQuestion(accompanyingPrompt || "Photo d'exercice envoyée")
       setLastAnswer(answer)
@@ -869,7 +871,7 @@ export default function App() {
       // Même raisonnement que dans handleExercise : hint synchronisé avec le titre de repli
       // calculé côté serveur (voir database.py::_fallback_conversation_title).
       const convId = await ensureConversation(`Prérequis : ${chapitre}`).catch(() => null)
-      const remediation = await generatePrerequis(classCode, chapitre, history, convId, controller.signal)
+      const remediation = await generatePrerequis(classCode, chapitre, history, convId, controller.signal, getToken())
       pushRemediationMessage(remediation)
       recordTopicVisit(classCode, chapitre, classeNom)
       refreshProfile()
