@@ -1256,6 +1256,7 @@ export default function App() {
         onClose={() => setFlashcardsViewerOpen(false)}
         classCode={classCode}
         chapter={chapitre}
+        token={getToken()}
       />
       {user && (
         <EditProfileSheet

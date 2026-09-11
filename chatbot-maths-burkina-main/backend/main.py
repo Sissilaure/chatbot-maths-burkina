@@ -5,7 +5,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, model_validator
 from typing import Optional, List
-from datetime import date
+from datetime import date, datetime, timezone
+import hashlib
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -602,21 +603,42 @@ def get_summary_file(class_code: str, chapter: str):
     return FileResponse(file_path, filename=os.path.basename(file_path), content_disposition_type="inline")
 
 class Flashcard(BaseModel):
+    id: str
     front: str
     back: str
+    # False seulement pour un élève connecté qui a déjà bien mémorisé cette carte ET dont
+    # l'échéance de révision n'est pas encore passée (voir get_flashcard_review_state côté
+    # database.py) ; toujours True pour un invité, faute d'historique à consulter.
+    due: bool = True
 
 class FlashcardsResponse(BaseModel):
     class_level: str
     chapter: str
     cards: List[Flashcard]
 
+class FlashcardReviewRequest(BaseModel):
+    class_code: str
+    chapter: str
+    card_key: str
+    correct: bool
+
 # Alias de champs tolérés dans le JSON déposé par l'équipe pédagogique (le contenu vient
 # probablement d'un export existant, pas forcément déjà en front/back) — voir get_flashcards.
 _FLASHCARD_FRONT_KEYS = ("front", "recto", "question", "term", "terme")
 _FLASHCARD_BACK_KEYS = ("back", "verso", "answer", "reponse", "réponse", "definition", "définition")
 
+
+def _flashcard_card_key(front: str) -> str:
+    """Identifiant stable d'une carte à partir de son recto : les fichiers JSON déposés par
+    l'équipe pédagogique n'ont pas d'identifiant propre (voir get_flashcards), et on ne veut pas
+    leur en imposer un juste pour la répétition espacée (voir flashcard_reviews côté
+    database.py). Dérivé du contenu plutôt que de la position dans le fichier : un réordonnancement
+    du fichier source ne doit pas faire perdre l'historique de révision d'une carte inchangée."""
+    return hashlib.sha1(front.strip().encode("utf-8")).hexdigest()[:16]
+
+
 @app.get("/api/flashcards/{class_code}/{chapter}", response_model=FlashcardsResponse)
-def get_flashcards(class_code: str, chapter: str):
+def get_flashcards(class_code: str, chapter: str, user=Depends(auth.get_current_user_optional)):
     """Renvoie le jeu de flashcards déposé pour cette classe/ce chapitre (voir data/flashcards/,
     même convention de dossiers que data/documents/ et data/summaries/ — voir find_course_file),
     un fichier JSON par chapitre fourni par l'équipe pédagogique. Format accepté : soit une liste
@@ -624,7 +646,13 @@ def get_flashcards(class_code: str, chapter: str):
     par l'équipe pédagogique, avec niveau/chapitre/source/nombre_cartes en plus, ignorés ici) ;
     chaque carte accepte plusieurs noms de champs usuels (voir _FLASHCARD_FRONT_KEYS/
     _FLASHCARD_BACK_KEYS, dont recto/verso) plutôt que d'imposer front/back strictement, pour
-    coller à un export existant sans devoir le retoucher à la main."""
+    coller à un export existant sans devoir le retoucher à la main.
+
+    Pour un élève connecté, les cartes en retard (ou jamais vues) sont renvoyées EN PREMIER,
+    puis celles déjà maîtrisées et pas encore dues, triées par échéance croissante — voir
+    database.get_flashcard_review_state et POST /api/flashcards/review, qui alimente cet
+    historique. Un invité reçoit les cartes dans l'ordre du fichier, toutes marquées "due" :
+    sans compte, il n'y a pas d'historique auquel se raccrocher d'une session à l'autre."""
     if class_code not in get_classes():
         raise HTTPException(status_code=404, detail="Class not found")
     if chapter not in get_chapters(class_code):
@@ -655,12 +683,49 @@ def get_flashcards(class_code: str, chapter: str):
         front = next((item[k] for k in _FLASHCARD_FRONT_KEYS if item.get(k)), None)
         back = next((item[k] for k in _FLASHCARD_BACK_KEYS if item.get(k)), None)
         if front and back:
-            cards.append(Flashcard(front=str(front), back=str(back)))
+            cards.append({"id": _flashcard_card_key(str(front)), "front": str(front), "back": str(back)})
 
     if not cards:
         raise HTTPException(status_code=500, detail="Aucune carte valide dans ce fichier")
 
-    return FlashcardsResponse(class_level=class_code, chapter=chapter, cards=cards)
+    if not user:
+        return FlashcardsResponse(
+            class_level=class_code, chapter=chapter,
+            cards=[Flashcard(**c, due=True) for c in cards],
+        )
+
+    review_state = database.get_flashcard_review_state(user["id"], class_code, chapter)
+    now = datetime.now(timezone.utc)
+
+    def is_due(card):
+        state = review_state.get(card["id"])
+        return not state or state["due_at"] <= now
+
+    due_cards = [c for c in cards if is_due(c)]
+    later_cards = sorted(
+        (c for c in cards if not is_due(c)),
+        key=lambda c: review_state[c["id"]]["due_at"],
+    )
+    ordered = [Flashcard(**c, due=True) for c in due_cards] + [Flashcard(**c, due=False) for c in later_cards]
+
+    return FlashcardsResponse(class_level=class_code, chapter=chapter, cards=ordered)
+
+
+@app.post("/api/flashcards/review")
+def review_flashcard(payload: FlashcardReviewRequest, user=Depends(auth.get_current_user_optional)):
+    """Enregistre si l'élève savait ou non cette carte, pour la répétition espacée (voir
+    database.upsert_flashcard_review). Invité : réponse OK sans rien persister — le
+    réordonnancement en mémoire de session (voir FlashcardsViewer.jsx) reste disponible sans
+    compte, seule la mémoire d'une session à l'autre en dépend."""
+    if not user:
+        return {"persisted": False}
+    if payload.class_code not in get_classes():
+        raise HTTPException(status_code=400, detail="Invalid class level")
+    if payload.chapter not in get_chapters(payload.class_code):
+        raise HTTPException(status_code=400, detail="Invalid chapter for this class")
+
+    database.upsert_flashcard_review(user["id"], payload.class_code, payload.chapter, payload.card_key, payload.correct)
+    return {"persisted": True}
 
 @app.post("/api/exercise", response_model=ExerciseResponse)
 @limiter.limit(LLM_RATE_LIMIT)

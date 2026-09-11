@@ -9,13 +9,16 @@ import {
   CheckCircle2,
   Shuffle,
   ListChecks,
+  Check,
+  X,
+  PartyPopper,
 } from "lucide-react"
 import Modal from "./ui/Modal.jsx"
 import BottomSheet from "./ui/BottomSheet.jsx"
 import Badge from "./ui/Badge.jsx"
 import Button from "./ui/Button.jsx"
 import MathContent from "./MathContent.jsx"
-import { getFlashcards, getChapters } from "../api.js"
+import { getFlashcards, getChapters, reviewFlashcard } from "../api.js"
 import { useIsMobile } from "../lib/useMediaQuery.js"
 
 function shuffleArray(arr) {
@@ -37,8 +40,17 @@ function shuffleArray(arr) {
  * peut réviser plusieurs chapitres à la fois sans changer sa sélection principale. Les jeux de
  * chaque chapitre choisi sont simplement concaténés (un chapitre sans fichier de flashcards est
  * ignoré silencieusement, sauf si AUCUN des chapitres choisis n'en a).
+ *
+ * Répétition espacée (élève connecté, `token` fourni) : après avoir vu la réponse, l'élève
+ * s'auto-évalue ("Je savais" / "À revoir") plutôt que de simplement naviguer — voir
+ * handleSelfAssess, qui enregistre le résultat côté serveur (POST /api/flashcards/review,
+ * voir database.upsert_flashcard_review) ET fait revenir la carte ratée plus tard dans CETTE
+ * session (façon Leitner) avant même d'envisager un espacement inter-session, qui dépend lui de
+ * l'ordre déjà renvoyé par GET /api/flashcards (cartes dues en premier, voir api.js). Sans
+ * token (invité), l'auto-évaluation reste utile pour le réordonnancement en session, mais rien
+ * n'est mémorisé d'une session à l'autre faute de compte.
  */
-export default function FlashcardsViewer({ open, onClose, classCode, chapter }) {
+export default function FlashcardsViewer({ open, onClose, classCode, chapter, token = null }) {
   const isMobile = useIsMobile()
   const Container = isMobile ? BottomSheet : Modal
   const [cards, setCards] = useState([])
@@ -47,6 +59,7 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
   const [status, setStatus] = useState("picking") // "picking" | "loading" | "ready" | "error" | "unavailable"
   const [allChapters, setAllChapters] = useState([])
   const [selectedChapters, setSelectedChapters] = useState([])
+  const [sessionStats, setSessionStats] = useState({ correct: 0, total: 0 })
 
   useEffect(() => {
     if (!open) return
@@ -70,21 +83,29 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
     setStatus("loading")
     Promise.allSettled(
       selectedChapters.map((ch) =>
-        getFlashcards(classCode, ch).then((cardsForChapter) =>
+        getFlashcards(classCode, ch, token).then((cardsForChapter) =>
           (cardsForChapter || []).map((c) => ({ ...c, chapterLabel: ch }))
         )
       )
     ).then((results) => {
-      const merged = results
+      let merged = results
         .filter((r) => r.status === "fulfilled")
         .flatMap((r) => r.value)
       if (merged.length === 0) {
         setStatus("unavailable")
         return
       }
+      // Cartes dues (ou jamais vues) en premier quel que soit le chapitre d'origine : chaque
+      // chapitre est déjà trié individuellement par l'API (voir get_flashcards côté backend),
+      // mais une simple concaténation ferait passer les cartes déjà maîtrisées du chapitre A
+      // avant les cartes dues du chapitre B.
+      if (selectedChapters.length > 1) {
+        merged = [...merged.filter((c) => c.due), ...merged.filter((c) => !c.due)]
+      }
       setCards(merged)
       setIndex(0)
       setFlipped(false)
+      setSessionStats({ correct: 0, total: 0 })
       setStatus("ready")
     })
   }
@@ -98,6 +119,18 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
   function goTo(next) {
     setFlipped(false)
     setIndex(next)
+  }
+
+  function handleSelfAssess(correct) {
+    const reviewedCard = cards[index]
+    const cardChapter = reviewedCard.chapterLabel || selectedChapters[0] || chapter
+    // Best-effort : ne bloque jamais la révision en cours si l'enregistrement échoue (réseau,
+    // invité sans compte...) — voir reviewFlashcard côté api.js.
+    reviewFlashcard(classCode, cardChapter, reviewedCard.id, correct, token).catch(() => {})
+    setSessionStats((s) => ({ correct: s.correct + (correct ? 1 : 0), total: s.total + 1 }))
+    setCards((prev) => (correct ? prev : [...prev, reviewedCard]))
+    setFlipped(false)
+    setIndex((i) => i + 1)
   }
 
   function handleKeyDown(e) {
@@ -189,6 +222,33 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
           </div>
         )}
 
+        {/* index a dépassé la fin de la pile : soit navigation manuelle jusqu'au bout, soit fin
+            de l'auto-évaluation (voir handleSelfAssess) — les deux cas atterrissent ici. */}
+        {status === "ready" && !card && cards.length > 0 && (
+          <div className="flex min-h-[40vh] flex-col items-center justify-center gap-4 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/15 text-primary">
+              <PartyPopper size={26} />
+            </div>
+            <div>
+              <p className="font-heading text-lg font-semibold text-base-content">Pile terminée !</p>
+              {sessionStats.total > 0 && (
+                <p className="mt-1 text-sm text-base-content/60">
+                  {sessionStats.correct} / {sessionStats.total} cartes sues du premier coup
+                  {!token && " · connecte-toi pour garder cette progression d'une session à l'autre"}
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <Button variant="outline" size="sm" onClick={() => setStatus("picking")}>
+                Changer les chapitres
+              </Button>
+              <Button variant="primary" size="sm" onClick={loadSelectedChapters}>
+                <RotateCw size={14} /> Recommencer
+              </Button>
+            </div>
+          </div>
+        )}
+
         {status === "ready" && card && (
           <>
             <div className="w-full max-w-md">
@@ -264,26 +324,49 @@ export default function FlashcardsViewer({ open, onClose, classCode, chapter }) 
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => goTo(index - 1)}
-                disabled={index <= 0}
-                className="flex h-10 w-10 items-center justify-center rounded-full border border-base-300/60 text-base-content/70 hover:bg-base-200 disabled:pointer-events-none disabled:opacity-30"
-                title="Carte précédente"
-              >
-                <ChevronLeft size={18} />
-              </button>
-              <button
-                type="button"
-                onClick={() => goTo(index + 1)}
-                disabled={index >= cards.length - 1}
-                className="flex h-10 w-10 items-center justify-center rounded-full border border-base-300/60 text-base-content/70 hover:bg-base-200 disabled:pointer-events-none disabled:opacity-30"
-                title="Carte suivante"
-              >
-                <ChevronRight size={18} />
-              </button>
-            </div>
+            {flipped ? (
+              // Auto-évaluation plutôt qu'une simple navigation une fois la réponse vue (voir
+              // handleSelfAssess) : c'est CE signal, pas la navigation, qui alimente la
+              // répétition espacée — "À revoir" fait revenir la carte plus tard dans cette
+              // même session (façon Leitner), en plus d'enregistrer le résultat côté serveur.
+              <div className="flex w-full max-w-md items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleSelfAssess(false)}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-error/30 bg-error/5 px-4 py-2.5 text-sm font-medium text-error transition-colors hover:bg-error/10"
+                >
+                  <X size={16} /> À revoir
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelfAssess(true)}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-content shadow-glow transition-transform active:scale-[0.98] hover:brightness-110"
+                >
+                  <Check size={16} /> Je savais
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => goTo(index - 1)}
+                  disabled={index <= 0}
+                  className="flex h-10 w-10 items-center justify-center rounded-full border border-base-300/60 text-base-content/70 hover:bg-base-200 disabled:pointer-events-none disabled:opacity-30"
+                  title="Carte précédente"
+                >
+                  <ChevronLeft size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => goTo(index + 1)}
+                  disabled={index >= cards.length - 1}
+                  className="flex h-10 w-10 items-center justify-center rounded-full border border-base-300/60 text-base-content/70 hover:bg-base-200 disabled:pointer-events-none disabled:opacity-30"
+                  title="Carte suivante"
+                >
+                  <ChevronRight size={18} />
+                </button>
+              </div>
+            )}
 
             <button
               type="button"

@@ -34,6 +34,10 @@ class Config:
     MAX_TOKENS_SIMPLIFY = int(os.getenv("MAX_TOKENS_SIMPLIFY", "1500"))
     MAX_TOKENS_BASICS = int(os.getenv("MAX_TOKENS_BASICS", "2000"))
     MAX_TOKENS_REMEDIATION = int(os.getenv("MAX_TOKENS_REMEDIATION", "6144"))
+    # Second appel de relecture des QCM générés (exercices 1★, prérequis/remédiation) : vérifie
+    # que reponse_correcte_index pointe vraiment vers la bonne réponse avant de la servir à
+    # l'élève (voir RAGSystem._verify_qcm_batch) — juste des verdicts courts, pas de rédaction.
+    MAX_TOKENS_QCM_VERIFICATION = int(os.getenv("MAX_TOKENS_QCM_VERIFICATION", "2048"))
     MAX_TOKENS_EXERCISE_PHOTO = int(os.getenv("MAX_TOKENS_EXERCISE_PHOTO", "3000"))
     # Photo d'exercice envoyée par l'élève : au-delà, on refuse plutôt que de laisser l'upload
     # traîner (mobile en 3G) ou de gonfler inutilement le payload envoyé à l'API Claude.

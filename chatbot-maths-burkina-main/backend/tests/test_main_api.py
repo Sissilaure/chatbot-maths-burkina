@@ -103,7 +103,10 @@ def test_flashcards_route_reads_front_back(monkeypatch, tmp_path):
     res = client.get("/api/flashcards/2nde/Vecteurs du plan")
     assert res.status_code == 200
     data = res.json()
-    assert data["cards"] == [{"front": "Que vaut $2+2$ ?", "back": "$4$"}]
+    assert data["cards"] == [{
+        "id": main._flashcard_card_key("Que vaut $2+2$ ?"),
+        "front": "Que vaut $2+2$ ?", "back": "$4$", "due": True,
+    }]
 
 
 def test_flashcards_route_accepts_wrapped_and_aliased_fields(monkeypatch, tmp_path):
@@ -117,7 +120,7 @@ def test_flashcards_route_accepts_wrapped_and_aliased_fields(monkeypatch, tmp_pa
 
     res = client.get("/api/flashcards/2nde/Vecteurs du plan")
     assert res.status_code == 200
-    assert res.json()["cards"] == [{"front": "Q1", "back": "R1"}]
+    assert res.json()["cards"] == [{"id": main._flashcard_card_key("Q1"), "front": "Q1", "back": "R1", "due": True}]
 
 
 def test_flashcards_route_reads_real_pedagogical_schema(monkeypatch, tmp_path):
@@ -145,9 +148,12 @@ def test_flashcards_route_reads_real_pedagogical_schema(monkeypatch, tmp_path):
 
     res = client.get("/api/flashcards/3ème/Théorème de Thalès et sa réciproque")
     assert res.status_code == 200
+    front = "Dans quelle configuration peut-on appliquer le théorème de Thalès ?"
     assert res.json()["cards"] == [{
-        "front": "Dans quelle configuration peut-on appliquer le théorème de Thalès ?",
+        "id": main._flashcard_card_key(front),
+        "front": front,
         "back": "Deux droites sécantes en $A$ coupées par deux droites parallèles.",
+        "due": True,
     }]
 
 
@@ -160,6 +166,74 @@ def test_flashcards_route_404_for_missing_document(monkeypatch, tmp_path):
 def test_flashcards_route_404_for_invalid_chapter():
     res = client.get("/api/flashcards/2nde/Chapitre-qui-n-existe-pas")
     assert res.status_code == 404
+
+
+def test_flashcard_card_key_is_stable_and_content_based():
+    """Un identifiant dérivé du recto (voir _flashcard_card_key) : stable d'un appel à l'autre
+    pour la MÊME carte, différent pour des cartes différentes — un réordonnancement du fichier
+    source ne doit pas faire perdre l'historique de révision d'une carte inchangée."""
+    key1 = main._flashcard_card_key("Que vaut 2+2 ?")
+    key2 = main._flashcard_card_key("Que vaut 2+2 ?")
+    key3 = main._flashcard_card_key("Que vaut 3+3 ?")
+    assert key1 == key2
+    assert key1 != key3
+
+
+def test_flashcard_review_guest_does_not_persist():
+    res = client.post("/api/flashcards/review", json={
+        "class_code": "3ème", "chapter": "Les fractions", "card_key": "abc123", "correct": True,
+    })
+    assert res.status_code == 200
+    assert res.json() == {"persisted": False}
+
+
+def test_flashcard_review_rejects_invalid_class_or_chapter(unique_username):
+    token = _register(unique_username).json()["token"]
+    res = client.post(
+        "/api/flashcards/review",
+        json={"class_code": "classe-inexistante", "chapter": "x", "card_key": "abc", "correct": True},
+        headers=_auth_headers(token),
+    )
+    assert res.status_code == 400
+
+
+def test_flashcard_review_persists_and_reorders_next_fetch(monkeypatch, tmp_path, unique_username):
+    """Un élève connecté qui indique avoir déjà su une carte la voit repasser APRÈS les cartes
+    jamais vues au prochain chargement (voir get_flashcards, qui trie sur due_at)."""
+    chapitre = "Théorème de Thalès et sa réciproque"
+    chapter_dir = tmp_path / "3ème" / chapitre
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "cartes.json").write_text(
+        json.dumps([
+            {"front": "Carte A", "back": "Réponse A"},
+            {"front": "Carte B", "back": "Réponse B"},
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main.config, "FLASHCARDS_DIR", str(tmp_path))
+
+    token = _register(unique_username).json()["token"]
+    headers = _auth_headers(token)
+
+    first = client.get(f"/api/flashcards/3ème/{chapitre}", headers=headers).json()["cards"]
+    assert all(c["due"] for c in first)
+    card_a = next(c for c in first if c["front"] == "Carte A")
+
+    review = client.post(
+        "/api/flashcards/review",
+        json={"class_code": "3ème", "chapter": chapitre, "card_key": card_a["id"], "correct": True},
+        headers=headers,
+    )
+    assert review.status_code == 200
+    assert review.json() == {"persisted": True}
+
+    second = client.get(f"/api/flashcards/3ème/{chapitre}", headers=headers).json()["cards"]
+    # Carte A vient d'être mémorisée (échéance repoussée) : elle passe en dernier, Carte B
+    # (jamais vue) reste due et passe en premier.
+    assert second[-1]["front"] == "Carte A"
+    assert second[-1]["due"] is False
+    assert second[0]["front"] == "Carte B"
+    assert second[0]["due"] is True
 
 
 def test_exercise_rejects_invalid_class():
@@ -635,6 +709,138 @@ def test_generate_remediation_resilient_to_retrieval_failure(monkeypatch):
     questions = main.rag_system.generate_remediation("3ème", "Les fractions", history=[])
     assert len(questions) == 3
     assert [q["notion"] for q in questions] == ["n0", "n1", "n2"]
+
+
+# ---- Relecture des QCM générés (voir RAGSystem._verify_qcm_batch, rag_system.py) : filet de
+# sécurité contre un index marqué correct à tort par la génération initiale ----
+
+def test_verify_qcm_batch_corrects_wrong_marked_answer(monkeypatch):
+    qcm = [{"question": "2+2 ?", "choix": ["3", "4", "5", "6"],
+            "reponse_correcte_index": 0, "explication": "e"}]
+    verdicts = json.dumps({"verdicts": [{"index": 0, "reponse_correcte_index": 1}]})
+    monkeypatch.setattr(main.rag_system, "_call_claude", lambda *a, **k: verdicts)
+
+    corrected = main.rag_system._verify_qcm_batch("6ème", "Nombres entiers", qcm)
+    assert corrected[0]["reponse_correcte_index"] == 1
+    # L'original n'est jamais muté en place : on renvoie une copie corrigée.
+    assert qcm[0]["reponse_correcte_index"] == 0
+
+
+def test_verify_qcm_batch_leaves_correct_answer_unchanged(monkeypatch):
+    qcm = [{"question": "2+2 ?", "choix": ["3", "4", "5", "6"],
+            "reponse_correcte_index": 1, "explication": "e"}]
+    verdicts = json.dumps({"verdicts": [{"index": 0, "reponse_correcte_index": 1}]})
+    monkeypatch.setattr(main.rag_system, "_call_claude", lambda *a, **k: verdicts)
+
+    corrected = main.rag_system._verify_qcm_batch("6ème", "Nombres entiers", qcm)
+    assert corrected[0]["reponse_correcte_index"] == 1
+
+
+def test_verify_qcm_batch_fails_open_when_claude_unavailable(monkeypatch):
+    qcm = [{"question": "2+2 ?", "choix": ["3", "4", "5", "6"],
+            "reponse_correcte_index": 0, "explication": "e"}]
+    monkeypatch.setattr(main.rag_system, "_call_claude", lambda *a, **k: None)
+
+    corrected = main.rag_system._verify_qcm_batch("6ème", "Nombres entiers", qcm)
+    assert corrected == qcm
+
+
+def test_verify_qcm_batch_fails_open_on_malformed_response(monkeypatch):
+    qcm = [{"question": "2+2 ?", "choix": ["3", "4", "5", "6"],
+            "reponse_correcte_index": 0, "explication": "e"}]
+    monkeypatch.setattr(main.rag_system, "_call_claude", lambda *a, **k: "pas du json du tout")
+
+    corrected = main.rag_system._verify_qcm_batch("6ème", "Nombres entiers", qcm)
+    assert corrected == qcm
+
+
+def test_verify_qcm_batch_ignores_out_of_range_correction(monkeypatch):
+    """Un index de correction hors [0, len(choix)) est ignoré (garde-fou contre une relecture
+    elle-même mal formée) plutôt que d'écraser silencieusement avec une valeur invalide."""
+    qcm = [{"question": "2+2 ?", "choix": ["3", "4", "5", "6"],
+            "reponse_correcte_index": 0, "explication": "e"}]
+    verdicts = json.dumps({"verdicts": [{"index": 0, "reponse_correcte_index": 9}]})
+    monkeypatch.setattr(main.rag_system, "_call_claude", lambda *a, **k: verdicts)
+
+    corrected = main.rag_system._verify_qcm_batch("6ème", "Nombres entiers", qcm)
+    assert corrected[0]["reponse_correcte_index"] == 0
+
+
+def test_generate_exercise_difficulty1_applies_qcm_verification(monkeypatch):
+    """generate_exercise (1★, QCM) doit passer son lot de questions par _verify_qcm_batch et
+    servir le résultat corrigé à l'élève, pas la réponse brute de la première génération."""
+    exercise_json = json.dumps({
+        "chapitre": "Les nombres entiers",
+        "enonce": "Applique le cours.",
+        "qcm": [{"question": "2+2 ?", "choix": ["3", "4", "5", "6"],
+                 "reponse_correcte_index": 0, "explication": "e"}],
+    })
+    monkeypatch.setattr(main.rag_system, "_call_claude", lambda *a, **k: exercise_json)
+    monkeypatch.setattr(main.rag_system, "_retrieve_with_filters", lambda *a, **k: [])
+
+    captured = {}
+
+    def fake_verify(class_level, chapter, qcm_items):
+        captured["args"] = (class_level, chapter, qcm_items)
+        return [{**qcm_items[0], "reponse_correcte_index": 1}]
+
+    monkeypatch.setattr(main.rag_system, "_verify_qcm_batch", fake_verify)
+
+    result = main.rag_system.generate_exercise("6ème", "Les nombres entiers", difficulty=1)
+    assert captured["args"][0] == "6ème"
+    assert result["qcm"][0]["reponse_correcte_index"] == 1
+
+
+def test_generate_exercise_difficulty2_does_not_call_qcm_verification(monkeypatch):
+    """Niveau 2-4★ (exercice ouvert, pas de QCM à cette étape) : rien à vérifier ici, la
+    correction détaillée est un flux séparé (generate_exercise_solution)."""
+    exercise_json = json.dumps({
+        "chapitre": "Les nombres entiers",
+        "enonce": "Résous ce problème.",
+        "indices": ["Pense au cours."],
+        "figure": None,
+    })
+    monkeypatch.setattr(main.rag_system, "_call_claude", lambda *a, **k: exercise_json)
+    monkeypatch.setattr(main.rag_system, "_retrieve_with_filters", lambda *a, **k: [])
+
+    called = {"n": 0}
+    monkeypatch.setattr(
+        main.rag_system, "_verify_qcm_batch",
+        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or [],
+    )
+
+    main.rag_system.generate_exercise("6ème", "Les nombres entiers", difficulty=2)
+    assert called["n"] == 0
+
+
+def test_generate_prerequis_applies_qcm_verification(monkeypatch):
+    """generate_prerequis aplatit les exercices de toutes les notions en un seul lot pour
+    _verify_qcm_batch, puis redistribue les corrections à la bonne notion."""
+    prereq_json = json.dumps({"notions": [
+        {"notion": "n0", "rappel": "r0", "exercices": [
+            {"question": "q0", "choix": ["a", "b", "c", "d"], "reponse_correcte_index": 0, "explication": "e"},
+        ]},
+        {"notion": "n1", "rappel": "r1", "exercices": [
+            {"question": "q1a", "choix": ["a", "b", "c", "d"], "reponse_correcte_index": 0, "explication": "e"},
+            {"question": "q1b", "choix": ["a", "b", "c", "d"], "reponse_correcte_index": 0, "explication": "e"},
+        ]},
+    ]})
+    monkeypatch.setattr(main.rag_system, "_call_claude", lambda *a, **k: prereq_json)
+    monkeypatch.setattr(main.rag_system, "_retrieve_with_filters", lambda *a, **k: [])
+
+    captured = {}
+
+    def fake_verify(class_level, chapter, qcm_items):
+        captured["count"] = len(qcm_items)
+        return [{**it, "reponse_correcte_index": 2} for it in qcm_items]
+
+    monkeypatch.setattr(main.rag_system, "_verify_qcm_batch", fake_verify)
+
+    result = main.rag_system.generate_prerequis("3ème", "Les fractions", history=[])
+    assert captured["count"] == 3
+    assert result[0]["exercices"][0]["reponse_correcte_index"] == 2
+    assert result[1]["exercices"][0]["reponse_correcte_index"] == 2
+    assert result[1]["exercices"][1]["reponse_correcte_index"] == 2
 
 
 def test_exercise_photo_without_history_defaults_to_empty_list(monkeypatch):

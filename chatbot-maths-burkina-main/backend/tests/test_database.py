@@ -211,3 +211,54 @@ def test_create_user_rejects_nsp_gender(unique_username):
         assert False, "aurait dû lever une violation de contrainte CHECK"
     except psycopg.errors.CheckViolation:
         pass
+
+
+# ---- Répétition espacée des flashcards (voir flashcard_reviews et
+# upsert_flashcard_review/get_flashcard_review_state dans database.py) ----
+
+def test_flashcard_review_unknown_card_never_appears_in_state(unique_username):
+    """Une carte jamais revue n'a pas de ligne : get_flashcards (main.py) la traite alors comme
+    due par défaut plutôt que de dépendre d'une valeur par défaut ambiguë en base."""
+    student = _make_user(unique_username)
+    state = db.get_flashcard_review_state(student["id"], "6ème", "Les fractions")
+    assert state == {}
+
+
+def test_flashcard_review_correct_answer_pushes_due_date_forward(unique_username):
+    student = _make_user(unique_username)
+    db.upsert_flashcard_review(student["id"], "6ème", "Les fractions", "card-1", True)
+
+    state = db.get_flashcard_review_state(student["id"], "6ème", "Les fractions")
+    assert "card-1" in state
+    assert state["card-1"]["repetitions"] == 1
+    assert state["card-1"]["last_correct"] is True
+    # Une carte tout juste mémorisée ne doit pas redevenir due immédiatement.
+    from datetime import datetime, timezone
+    assert state["card-1"]["due_at"] > datetime.now(timezone.utc)
+
+
+def test_flashcard_review_wrong_answer_resets_repetitions_and_is_due_soon(unique_username):
+    student = _make_user(unique_username)
+    # Deux succès d'affilée font grandir l'intervalle...
+    db.upsert_flashcard_review(student["id"], "6ème", "Les fractions", "card-1", True)
+    db.upsert_flashcard_review(student["id"], "6ème", "Les fractions", "card-1", True)
+    # ... puis un échec doit repartir de zéro, pas juste réduire légèrement l'intervalle.
+    db.upsert_flashcard_review(student["id"], "6ème", "Les fractions", "card-1", False)
+
+    state = db.get_flashcard_review_state(student["id"], "6ème", "Les fractions")
+    assert state["card-1"]["repetitions"] == 0
+    assert state["card-1"]["last_correct"] is False
+
+
+def test_flashcard_review_is_scoped_per_student(unique_username):
+    """Deux élèves peuvent avoir un historique différent sur la MÊME carte (même class_code/
+    chapter/card_key) : la répétition espacée est individuelle, pas partagée."""
+    student_a = _make_user(unique_username)
+    student_b = _make_user(unique_username)
+
+    db.upsert_flashcard_review(student_a["id"], "6ème", "Les fractions", "card-1", True)
+
+    state_a = db.get_flashcard_review_state(student_a["id"], "6ème", "Les fractions")
+    state_b = db.get_flashcard_review_state(student_b["id"], "6ème", "Les fractions")
+    assert "card-1" in state_a
+    assert "card-1" not in state_b

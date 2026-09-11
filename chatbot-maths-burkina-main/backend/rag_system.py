@@ -387,6 +387,83 @@ class RAGSystem:
             print(f"[ERREUR] Anthropic: {e}")
             return None
 
+    def _verify_qcm_batch(self, class_level: str, chapter: Optional[str], qcm_items: list) -> list:
+        """Filet de sécurité contre une réponse marquée correcte à tort : les parseurs JSON
+        (_parse_exercise_json, _parse_prerequis_json) ne valident QUE la forme d'un QCM généré
+        (4 choix, un index entre 0 et 3), jamais si cet index pointe VRAIMENT vers la bonne
+        réponse — un exercice de maths qui affirme une mauvaise réponse avec la même assurance
+        qu'une bonne est le pire scénario pour un tuteur (l'élève apprend l'erreur en confiance).
+
+        Un second appel Claude, dédié UNIQUEMENT à la relecture (température 0, pas de rédaction
+        de question), résout chaque question lui-même puis confirme ou corrige l'index — un seul
+        appel pour tout le lot plutôt qu'un par question, pour ne pas multiplier la latence. En
+        cas d'échec (API indisponible, JSON non parsable...), on sert le lot ORIGINAL tel quel :
+        mieux vaut un exercice non revérifié qu'aucun exercice — ce n'est qu'un filet de sécurité
+        additionnel, pas une condition pour servir une réponse."""
+        if not qcm_items:
+            return qcm_items
+
+        try:
+            payload = json.dumps(
+                [
+                    {"index": i, "question": it["question"], "choix": it["choix"],
+                     "reponse_marquee": it["reponse_correcte_index"]}
+                    for i, it in enumerate(qcm_items)
+                ],
+                ensure_ascii=False,
+            )
+            system_prompt = f"""Tu es un correcteur de mathématiques rigoureux, pas un rédacteur. On te \
+soumet une liste de questions à choix multiples de niveau {class_level}{f" ({chapter})" if chapter else ""}, \
+chacune avec l'index (0 à 3) actuellement marqué comme la bonne réponse. Pour CHAQUE question, résous-la \
+intégralement par toi-même AVANT de comparer au marquage — ne te contente jamais de faire confiance à \
+"reponse_marquee".
+
+QUESTIONS :
+{payload}
+
+Réponds UNIQUEMENT avec un objet JSON (aucun texte avant/après, pas de bloc de code) : \
+{{"verdicts": [{{"index": 0, "reponse_correcte_index": 0}}, ...]}} — un verdict par question, dans n'importe \
+quel ordre (identifié par "index"), où "reponse_correcte_index" est TOUJOURS le bon index selon TA propre \
+résolution, que le marquage initial soit juste ou faux."""
+
+            response = self._call_claude(
+                system_prompt, [{"role": "user", "content": "Vérifie ces questions."}],
+                max_tokens=config.MAX_TOKENS_QCM_VERIFICATION, temperature=0,
+            )
+            if not response:
+                return qcm_items
+
+            text = response.strip()
+            text = re.sub(r"^```(json)?", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"```$", "", text).strip()
+            start, end = text.find("{"), text.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return qcm_items
+            data = json.loads(text[start:end + 1])
+
+            verdicts = data.get("verdicts")
+            if not isinstance(verdicts, list):
+                return qcm_items
+
+            corrected = list(qcm_items)
+            for verdict in verdicts:
+                if not isinstance(verdict, dict):
+                    continue
+                i = verdict.get("index")
+                idx = verdict.get("reponse_correcte_index")
+                if not isinstance(i, int) or not (0 <= i < len(corrected)):
+                    continue
+                if not isinstance(idx, int) or not (0 <= idx < len(corrected[i]["choix"])):
+                    continue
+                if idx != corrected[i]["reponse_correcte_index"]:
+                    print(f"[INFO] Vérification QCM : correction {corrected[i]['reponse_correcte_index']} -> "
+                          f"{idx} pour « {corrected[i]['question'][:60]}... »")
+                    corrected[i] = {**corrected[i], "reponse_correcte_index": idx}
+            return corrected
+        except Exception as e:
+            print(f"[WARN] Vérification QCM échouée, réponse originale conservée: {e}")
+            return qcm_items
+
     def _stream_claude(self, system_prompt: str, messages: list, max_tokens: int = 1024,
                         temperature: float = None):
         """Version streaming de `_call_claude` : yield des fragments de texte au fur et à mesure,
@@ -894,6 +971,16 @@ FORMAT DE SORTIE — réponds UNIQUEMENT avec un objet JSON valide (aucun texte 
         if response:
             questions = self._parse_prerequis_json(response)
             if questions:
+                # Revérifie tous les exercices diagnostiques de toutes les notions en UN seul
+                # appel (voir _verify_qcm_batch) plutôt qu'un par notion : on aplatit puis on
+                # redistribue dans le même ordre.
+                flat = [ex for notion in questions for ex in notion["exercices"]]
+                verified = self._verify_qcm_batch(class_level, chapter, flat)
+                i = 0
+                for notion in questions:
+                    n = len(notion["exercices"])
+                    notion["exercices"] = verified[i:i + n]
+                    i += n
                 return questions
 
         print("[WARN] Claude indisponible ou reponse non structuree pour les prérequis, fallback local...")
@@ -1265,9 +1352,12 @@ qu'il annote (jamais pile sur un segment ni à l'intérieur d'un polygone rempli
         if response:
             parsed, claude_chapter = self._parse_exercise_json(response, difficulty)
             if parsed:
-                parsed["chapter"] = chapter or claude_chapter or self._default_chapter(class_level)
+                resolved_chapter = chapter or claude_chapter or self._default_chapter(class_level)
+                parsed["chapter"] = resolved_chapter
                 parsed["class_level"] = class_level
                 parsed["difficulty"] = difficulty
+                if parsed["qcm"] is not None:
+                    parsed["qcm"] = self._verify_qcm_batch(class_level, resolved_chapter, parsed["qcm"])
                 return parsed
             print(f"[WARN] JSON exercice non parsable meme apres reparation ({len(response)} caracteres) : "
                   f"debut={response[:150]!r} fin={response[-150:]!r}")

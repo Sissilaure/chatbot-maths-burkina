@@ -348,10 +348,28 @@ export async function checkSummaryFileAvailable(classCode, chapter) {
  * HEAD préalable : la réponse est un petit JSON structuré (pas un fichier à ouvrir dans un nouvel
  * onglet), FlashcardsViewer.jsx gère lui-même l'état "indisponible" au 404.
  */
-export async function getFlashcards(classCode, chapter) {
-  const res = await fetch(`${API_BASE}/api/flashcards/${encodeURIComponent(classCode)}/${encodeURIComponent(chapter)}`)
+export async function getFlashcards(classCode, chapter, token = null) {
+  const res = await fetch(
+    `${API_BASE}/api/flashcards/${encodeURIComponent(classCode)}/${encodeURIComponent(chapter)}`,
+    token ? { headers: authHeaders(token) } : undefined
+  )
   const data = await handleJson(res, "Erreur lors du chargement des flashcards")
-  return data.cards // [{front, back}]
+  return data.cards // [{id, front, back, due}] — id/due alimentent la répétition espacée, voir FlashcardsViewer.jsx
+}
+
+/**
+ * Enregistre si l'élève savait ou non une carte (répétition espacée, voir
+ * database.upsert_flashcard_review côté backend). Sans token (invité), le backend répond quand
+ * même OK sans rien persister — l'appel reste "fire and forget" côté FlashcardsViewer.jsx, une
+ * panne ici ne doit jamais bloquer la révision en cours.
+ */
+export async function reviewFlashcard(classCode, chapter, cardKey, correct, token = null) {
+  const res = await fetch(`${API_BASE}/api/flashcards/review`, {
+    method: "POST",
+    headers: token ? authHeaders(token) : { "Content-Type": "application/json" },
+    body: JSON.stringify({ class_code: classCode, chapter, card_key: cardKey, correct }),
+  })
+  return handleJson(res, "Erreur lors de l'enregistrement de la révision")
 }
 
 // ---------------------------------------------------------------------------

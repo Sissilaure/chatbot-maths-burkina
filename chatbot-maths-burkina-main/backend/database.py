@@ -234,6 +234,30 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.struggles (
 );
 
 CREATE INDEX IF NOT EXISTS struggle_user_idx ON {SCHEMA}.struggles (user_id, created_at DESC);
+
+-- Répétition espacée pour les flashcards (voir /api/flashcards, /api/flashcards/review côté
+-- main.py) : une ligne par carte déjà revue par un élève connecté (les invités gardent l'usage
+-- normal des flashcards mais sans mémoire d'une session à l'autre, faute de compte). card_key
+-- est un hash stable du recto de la carte (voir _flashcard_card_key côté main.py) — les fichiers
+-- JSON déposés par l'équipe pédagogique n'ont pas d'identifiant propre, et on ne veut pas leur
+-- en imposer un.
+CREATE TABLE IF NOT EXISTS {SCHEMA}.flashcard_reviews (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id       uuid NOT NULL REFERENCES {SCHEMA}.users(id) ON DELETE CASCADE,
+    class_code    text NOT NULL,
+    chapter       text NOT NULL,
+    card_key      text NOT NULL,
+    repetitions   integer NOT NULL DEFAULT 0,
+    ease_factor   real NOT NULL DEFAULT 2.5,
+    interval_days integer NOT NULL DEFAULT 0,
+    due_at        timestamptz NOT NULL DEFAULT now(),
+    last_correct  boolean,
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (user_id, class_code, chapter, card_key)
+);
+
+CREATE INDEX IF NOT EXISTS flashcard_review_due_idx
+    ON {SCHEMA}.flashcard_reviews (user_id, class_code, chapter, due_at);
 """
 
 
@@ -738,6 +762,76 @@ def get_recent_topics(user_id: str, limit: int = 5) -> list[dict]:
             (user_id, limit),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+# --------------------------------------------------------------------------
+# Flashcards (répétition espacée)
+# --------------------------------------------------------------------------
+
+def get_flashcard_review_state(user_id: str, class_code: str, chapter: str) -> dict[str, dict]:
+    """État de révision de chaque carte déjà vue par CET élève pour ce chapitre, indexé par
+    card_key — sert à faire remonter en priorité les cartes en retard ou jamais vues devant
+    celles déjà bien maîtrisées (voir get_flashcards côté main.py, qui trie sur "due_at")."""
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""SELECT card_key, due_at, repetitions, last_correct
+                FROM {SCHEMA}.flashcard_reviews
+                WHERE user_id = %s AND class_code = %s AND chapter = %s""",
+            (user_id, class_code, chapter),
+        )
+        return {r["card_key"]: dict(r) for r in cur.fetchall()}
+
+
+def upsert_flashcard_review(user_id: str, class_code: str, chapter: str, card_key: str, correct: bool) -> None:
+    """Enregistre le résultat d'une carte et recalcule son échéance de révision — variante
+    simplifiée de SM-2 (l'algorithme d'Anki/SuperMemo), adaptée à un signal binaire correct/
+    incorrect plutôt qu'une note de qualité 0-5 (voir POST /api/flashcards/review, qui ne
+    recueille que "je savais"/"à revoir") :
+    - mémorisée : l'intervalle grandit (1 jour, puis 3, puis multiplié par le facteur de
+      facilité à chaque répétition suivante), le facteur de facilité augmente légèrement ;
+    - ratée : on repart de zéro (revoir dès demain), le facteur de facilité diminue un peu mais
+      jamais sous 1.3 (comme dans SM-2), pour ne pas s'effondrer après plusieurs échecs d'affilée."""
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""SELECT repetitions, ease_factor, interval_days
+                FROM {SCHEMA}.flashcard_reviews
+                WHERE user_id = %s AND class_code = %s AND chapter = %s AND card_key = %s""",
+            (user_id, class_code, chapter, card_key),
+        )
+        row = cur.fetchone()
+        repetitions = row["repetitions"] if row else 0
+        ease_factor = row["ease_factor"] if row else 2.5
+        interval_days = row["interval_days"] if row else 0
+
+        if correct:
+            repetitions += 1
+            if repetitions == 1:
+                interval_days = 1
+            elif repetitions == 2:
+                interval_days = 3
+            else:
+                interval_days = max(1, round(interval_days * ease_factor))
+            ease_factor = min(2.8, ease_factor + 0.1)
+        else:
+            repetitions = 0
+            interval_days = 1
+            ease_factor = max(1.3, ease_factor - 0.2)
+
+        cur.execute(
+            f"""INSERT INTO {SCHEMA}.flashcard_reviews
+                    (user_id, class_code, chapter, card_key, repetitions, ease_factor,
+                     interval_days, due_at, last_correct, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, now() + make_interval(days => %s), %s, now())
+                ON CONFLICT (user_id, class_code, chapter, card_key) DO UPDATE SET
+                    repetitions = EXCLUDED.repetitions,
+                    ease_factor = EXCLUDED.ease_factor,
+                    interval_days = EXCLUDED.interval_days,
+                    due_at = EXCLUDED.due_at,
+                    last_correct = EXCLUDED.last_correct,
+                    updated_at = now()""",
+            (user_id, class_code, chapter, card_key, repetitions, ease_factor,
+             interval_days, interval_days, correct),
+        )
 
 
 def has_any_history(user_id: str) -> bool:
