@@ -2,12 +2,18 @@ import React, { useEffect, useMemo, useState } from "react"
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts"
-import { Sigma, Users, ClipboardCheck, TrendingUp, LogOut, Moon, Sun, AlertTriangle } from "lucide-react"
+import { Sigma, Users, ClipboardCheck, TrendingUp, LogOut, Moon, Sun, MessageSquare } from "lucide-react"
 import Card from "./ui/Card"
 import Button from "./ui/Button"
 import {
   getClasses, getAdminOverview, getAdminSuccessByChapter, getAdminWeakNotions, getAdminTrend, getAdminActivity,
+  getAdminDemographics,
 } from "../api.js"
+
+// Genre restreint à F/M depuis le correctif de spécification (plus de "NSP" — voir
+// backend/migrations/003_gender_two_values.sql) : un gender NULL residuel (compte migré pas
+// encore complété) tombe sur le repli "Non renseigné" plus bas, pas sur une entrée de cette table.
+const GENDER_LABELS = { F: "Féminin", M: "Masculin", autres: "Autres (effectif faible)" }
 
 // Couleurs exactes des thèmes DaisyUI de l'appli (tailwind.config.js) : recharts a besoin de
 // valeurs hex littérales, donc on ne peut pas se contenter des classes Tailwind ici.
@@ -79,6 +85,8 @@ export default function AdminDashboard({ token, username, theme, onToggleTheme, 
   const [trend, setTrend] = useState([])
   const [activity, setActivity] = useState([])
   const [loading, setLoading] = useState(true)
+  const [demographics, setDemographics] = useState(null)
+  const [demographicsError, setDemographicsError] = useState(false)
 
   useEffect(() => {
     getClasses().then(setClasses).catch(() => {})
@@ -102,7 +110,25 @@ export default function AdminDashboard({ token, username, theme, onToggleTheme, 
         setTrend(tr.map((t) => ({ ...t, label: formatMonth(t.month) })))
         setActivity(act.map((a) => ({ ...a, label: formatMonth(a.month) })))
       })
+      .catch(() => {
+        /* un échec ici ne doit pas empêcher les autres cartes de s'afficher (voir demographics
+         * ci-dessous, chargé séparément pour la même raison) */
+      })
       .finally(() => !cancelled && setLoading(false))
+    return () => {
+      cancelled = true
+    }
+  }, [token, classLevel])
+
+  // Chargé séparément du Promise.all ci-dessus (pas juste ajouté dedans) : un Promise.all rejette
+  // globalement si UNE seule promesse échoue, ce qui aurait fait disparaître tous les autres
+  // graphiques à chaque appel de cette route.
+  useEffect(() => {
+    let cancelled = false
+    setDemographicsError(false)
+    getAdminDemographics(token, classLevel)
+      .then((data) => !cancelled && setDemographics(data))
+      .catch(() => !cancelled && setDemographicsError(true))
     return () => {
       cancelled = true
     }
@@ -156,29 +182,33 @@ export default function AdminDashboard({ token, username, theme, onToggleTheme, 
         </div>
 
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {/* Champs alignés sur database.get_admin_overview() (students/conversations/quiz_answers/
+              success_rate) — l'ancien schéma SQLite exposait active_students/remediations_completed,
+              des noms et une sémantique différents (ex: pas de fenêtre de 30 jours ici, voir
+              RAPPORT_MIGRATION.md), d'où le changement de libellés ci-dessous. */}
           <StatTile
-            icon={Users} label="Élèves actifs (30 jours)" accent="bg-primary/15 text-primary"
-            value={overview ? overview.active_students : "—"}
+            icon={Users} label="Élèves inscrits" accent="bg-primary/15 text-primary"
+            value={overview ? overview.students : "—"}
           />
           <StatTile
-            icon={ClipboardCheck} label="Remédiations complétées" accent="bg-secondary/15 text-secondary"
-            value={overview ? overview.remediations_completed : "—"}
+            icon={MessageSquare} label="Conversations" accent="bg-secondary/15 text-secondary"
+            value={overview ? overview.conversations : "—"}
           />
           <StatTile
             icon={TrendingUp} label="Taux de réussite global" accent="bg-success/15 text-success"
-            value={overview ? `${Math.round(overview.success_rate)}%` : "—"}
+            value={overview && overview.success_rate != null ? `${Math.round(overview.success_rate)}%` : "—"}
           />
           <StatTile
-            icon={AlertTriangle} label="Notions distinctes travaillées" accent="bg-accent/15 text-accent"
-            value={chapters.length ? chapters.length : "—"}
+            icon={ClipboardCheck} label="Réponses aux QCM de prérequis" accent="bg-accent/15 text-accent"
+            value={overview ? overview.quiz_answers : "—"}
           />
         </div>
 
         <Card className="p-5">
           <h2 className="font-heading mb-1 text-base font-semibold">Évolution du taux de réussite</h2>
-          <p className="mb-4 text-sm text-base-content/60">Résultats aux QCM de remédiation, par mois</p>
+          <p className="mb-4 text-sm text-base-content/60">Résultats aux QCM de prérequis, par mois</p>
           {!loading && trend.length === 0 ? (
-            <EmptyState text="Pas encore assez de données de remédiation pour tracer une tendance." />
+            <EmptyState text="Pas encore assez de données de prérequis pour tracer une tendance." />
           ) : (
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={trend} margin={{ top: 8, right: 12, bottom: 0, left: -12 }}>
@@ -203,7 +233,7 @@ export default function AdminDashboard({ token, username, theme, onToggleTheme, 
             <h2 className="font-heading mb-1 text-base font-semibold">Réussite par chapitre</h2>
             <p className="mb-4 text-sm text-base-content/60">Vert ≥ 75% · Orange 50-75% · Rouge &lt; 50%</p>
             {!loading && chapterData.length === 0 ? (
-              <EmptyState text="Aucune remédiation complétée pour l'instant." />
+              <EmptyState text="Aucun prérequis complété pour l'instant." />
             ) : (
               <ResponsiveContainer width="100%" height={Math.max(220, chapterData.length * 34)}>
                 <BarChart data={chapterData} layout="vertical" margin={{ top: 0, right: 24, bottom: 0, left: 0 }}>
@@ -253,6 +283,35 @@ export default function AdminDashboard({ token, username, theme, onToggleTheme, 
                 <YAxis allowDecimals={false} tick={{ fill: palette.muted, fontSize: 12 }} axisLine={false} tickLine={false} />
                 <Tooltip content={<ChartTooltip />} />
                 <Bar dataKey="conversations" name="Conversations" fill={palette.secondary} radius={[4, 4, 0, 0]} maxBarSize={28} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+
+        <Card className="p-5">
+          <h2 className="font-heading mb-1 text-base font-semibold">Répartition des élèves inscrits</h2>
+          <p className="mb-4 text-sm text-base-content/60">
+            Genre déclaré à l'inscription. Les cellules trop peu peuplées pour rester anonymes sont
+            regroupées dans « Autres » plutôt qu'affichées telles quelles (voir database.get_demographics).
+          </p>
+          {demographicsError ? (
+            <EmptyState text="Statistiques démographiques indisponibles pour le moment." />
+          ) : !demographics ? (
+            <EmptyState text="Chargement…" />
+          ) : demographics.gender.length === 0 ? (
+            <EmptyState text="Pas encore assez d'élèves inscrits pour afficher cette répartition." />
+          ) : (
+            <ResponsiveContainer width="100%" height={Math.max(160, demographics.gender.length * 44)}>
+              <BarChart
+                data={demographics.gender.map((g) => ({ ...g, label: GENDER_LABELS[g.value] || g.value || "Non renseigné" }))}
+                layout="vertical"
+                margin={{ top: 0, right: 24, bottom: 0, left: 0 }}
+              >
+                <CartesianGrid stroke={palette.grid} horizontal={false} />
+                <XAxis type="number" allowDecimals={false} tick={{ fill: palette.muted, fontSize: 12 }} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="label" width={140} tick={{ fill: palette.text, fontSize: 12 }} axisLine={false} tickLine={false} />
+                <Tooltip content={<ChartTooltip />} />
+                <Bar dataKey="n" name="Élèves" fill={palette.primary} radius={[0, 4, 4, 0]} maxBarSize={22} />
               </BarChart>
             </ResponsiveContainer>
           )}

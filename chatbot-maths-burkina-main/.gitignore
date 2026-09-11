@@ -37,6 +37,19 @@ dist-ssr/
 .env
 .env.local
 .env.*.local
+# Sauvegardes ponctuelles d'un .env (ex: avant un nettoyage de variables) : mêmes secrets, mais
+# un nom horodaté ("*.env.bak-20260902...") ne matche aucun des motifs ci-dessus et se
+# retrouverait suivi par erreur au premier `git add` large si on oubliait de le supprimer.
+.env.bak*
+*.env.bak*
+
+# Secrets génériques (clés privées, certificats) : rien de tel n'est censé exister dans ce repo,
+# mais autant s'en prémunir plutôt que de compter sur la vigilance à chaque commit.
+*.pem
+*.key
+id_rsa*
+*.p12
+*.pfx
 
 # IDE
 .vscode/
@@ -63,6 +76,10 @@ backend/data/.jwt_secret
 # Build frontend copié à côté du backend pour les déploiements "tout-en-un" (voir main.py) :
 # généré via `npm run build`, jamais commité (comme frontend/dist, déjà ignoré ci-dessus).
 backend/frontend_dist/
+
+# Cache local du modèle d'embeddings (voir EMBED_CACHE_DIR dans rag_system.py) : régénéré par
+# le Dockerfile au build, ou au premier lancement local — jamais commité (fichiers binaires lourds).
+backend/hf_cache/
 
 # Logs
 *.log

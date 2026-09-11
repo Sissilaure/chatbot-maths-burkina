@@ -1,5 +1,35 @@
 import { describe, it, expect } from "vitest"
-import { stripFigureBlocks, splitBoldSegments, parseMarkdownLines, qcmToLines } from "./docxModel.js"
+import { stripFigureBlocks, splitBoldSegments, parseMarkdownLines, qcmToLines, convertLatexToPlainText } from "./docxModel.js"
+
+describe("convertLatexToPlainText", () => {
+  it("leaves text without LaTeX untouched", () => {
+    expect(convertLatexToPlainText("Rien de mathématique ici.")).toBe("Rien de mathématique ici.")
+  })
+
+  it("converts a fraction and a blackboard-bold set", () => {
+    expect(convertLatexToPlainText("$0,25 = \\dfrac{1}{4}$")).toBe("0,25 = (1)/(4)")
+    expect(convertLatexToPlainText("$q \\in \\mathbb{Z}^*$")).toBe("q ∈ ℤ^*")
+  })
+
+  it("converts comparison/arrow symbols and \\checkmark", () => {
+    expect(convertLatexToPlainText("$6 > -15 \\quad \\checkmark$")).toBe("6 > -15 ✓")
+    expect(convertLatexToPlainText("$-2 < 5 \\Rightarrow 6 > -15$")).toBe("-2 < 5 ⇒ 6 > -15")
+  })
+
+  it("converts absolute values written with \\left|...\\right|", () => {
+    expect(convertLatexToPlainText("$\\left|\\dfrac{a}{b}\\right| = \\dfrac{|a|}{|b|}$")).toBe("|(a)/(b)| = (|a|)/(|b|)")
+  })
+
+  it("converts a display ($$...$$) block", () => {
+    expect(convertLatexToPlainText("$$-3 > -8 \\quad \\text{car} \\quad |-3| = 3 < |-8| = 8$$")).toBe(
+      "-3 > -8 car |-3| = 3 < |-8| = 8"
+    )
+  })
+
+  it("converts exponents to Unicode superscripts when possible", () => {
+    expect(convertLatexToPlainText("$(-5)^2 = 25$")).toBe("(-5)² = 25")
+  })
+})
 
 describe("stripFigureBlocks", () => {
   it("replaces a ```figure``` block with a textual placeholder", () => {

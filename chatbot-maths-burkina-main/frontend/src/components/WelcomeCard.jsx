@@ -1,82 +1,102 @@
-import React from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { motion } from "framer-motion"
-import { Sparkles, MessageCircleQuestion, PencilRuler, Baby } from "lucide-react"
-import Card from "./ui/Card"
 import MathContent from "./MathContent"
+import { buildSuggestions } from "../lib/suggestions"
 
-const stepVariants = {
-  hidden: { opacity: 0, y: 12 },
-  show: (i) => ({ opacity: 1, y: 0, transition: { duration: 0.3, delay: 0.15 + i * 0.08, ease: "easeOut" } }),
+function SuggestionButtons({ suggestions, onSuggestionClick }) {
+  if (suggestions.length === 0) return null
+  return (
+    <div className="flex flex-col gap-1.5">
+      {suggestions.map((q, i) => (
+        <motion.button
+          key={q}
+          initial={{ opacity: 0, x: -8 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.25, delay: i * 0.05, ease: "easeOut" }}
+          onClick={() => onSuggestionClick(q)}
+          className="rounded-lg border border-base-300/60 bg-base-100 px-3 py-2.5 text-left text-sm transition-colors hover:border-primary/50 hover:bg-primary/5"
+        >
+          {q}
+        </motion.button>
+      ))}
+    </div>
+  )
 }
 
-const STEPS = [
-  {
-    icon: MessageCircleQuestion,
-    color: "bg-primary/15 text-primary",
-    title: "Pose ta question",
-    text: "Directement, à tout moment — choisir ta classe et ton chapitre à gauche aide à affiner la réponse, mais ce n'est pas obligatoire.",
-  },
-  {
-    icon: Baby,
-    color: "bg-secondary/15 text-secondary",
-    title: "Pas compris ?",
-    text: "Clique sur \"Simplifie\" pour une explication encore plus simple, avec un autre exemple.",
-  },
-  {
-    icon: PencilRuler,
-    color: "bg-accent/15 text-accent",
-    title: "Entraîne-toi",
-    text: "Génère un exercice sur mesure, avec des indices et une correction détaillée.",
-  },
-]
+/** Message d'accueil personnalisé (compte avec historique) : coupé à 3 lignes visibles pour ne
+ * pas repousser les suggestions et le champ de saisie hors de l'écran sur mobile (voir
+ * RAPPORT_MOBILE.md). Le "Voir plus" ne s'affiche que si le texte dépasse vraiment ces 3 lignes. */
+function PersonalizedMessage({ text }) {
+  const [expanded, setExpanded] = useState(false)
+  const [truncatable, setTruncatable] = useState(false)
+  const contentRef = useRef(null)
 
-export default function WelcomeCard({ personalizedMessage }) {
+  useEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+    setTruncatable(el.scrollHeight > el.clientHeight + 1)
+  }, [text])
+
   return (
-    <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, ease: "easeOut" }}>
-      <Card glow className="overflow-hidden">
-        <div className="bg-gradient-to-br from-primary/10 via-secondary/5 to-transparent p-5 sm:p-6">
-          {personalizedMessage ? (
-            <div className="prose-chat mb-4 max-w-none">
-              <p className="font-heading mb-2 flex items-center gap-1.5 text-xl font-extrabold">
-                <Sparkles size={20} className="text-accent motion-safe:animate-pulse-slow" />
-                Bon retour !
-              </p>
-              <MathContent>{personalizedMessage}</MathContent>
-            </div>
-          ) : (
-            <>
-              <p className="font-heading mb-1 flex items-center gap-1.5 text-xl font-extrabold">
-                <Sparkles size={20} className="text-accent motion-safe:animate-pulse-slow" />
-                Salut, prêt à progresser en maths ?
-              </p>
-              <p className="mb-4 text-base text-base-content/70">
-                Pose n'importe quelle question de maths, du niveau 6ème à la Terminale. Je m'adapte à toi.
-              </p>
-            </>
-          )}
+    <div className="w-full max-w-[440px] text-left">
+      <div ref={contentRef} className={`prose-chat max-w-none text-sm ${expanded ? "" : "line-clamp-3"}`}>
+        <MathContent>{text}</MathContent>
+      </div>
+      {truncatable && (
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="mt-1 text-xs font-semibold text-primary hover:underline"
+        >
+          {expanded ? "Voir moins" : "Voir plus"}
+        </button>
+      )}
+    </div>
+  )
+}
 
-          <div className="grid gap-3 sm:grid-cols-3">
-            {STEPS.map((step, i) => (
-              <motion.div
-                key={i}
-                custom={i}
-                initial="hidden"
-                animate="show"
-                variants={stepVariants}
-                whileHover={{ y: -4 }}
-                transition={{ duration: 0.2, ease: "easeOut" }}
-                className="card-interactive rounded-xl border border-base-300/50 bg-base-100/70 p-3.5"
-              >
-                <div className={`mb-2 inline-flex h-8 w-8 items-center justify-center rounded-lg ${step.color}`}>
-                  <step.icon size={16} />
-                </div>
-                <p className="font-heading text-base font-semibold">{step.title}</p>
-                <p className="mt-0.5 text-sm leading-relaxed text-base-content/60">{step.text}</p>
-              </motion.div>
-            ))}
-          </div>
+/** Écran d'accueil centré affiché tant qu'aucun message n'existe (voir App.jsx, qui centre
+ * verticalement ce composant dans la zone de chat). Trois profils distincts :
+ * - invité : "Bonjour" seul, classe seulement si choisie dans le sélecteur, pas de message
+ *   personnalisé (l'API l'exige, voir App.jsx qui ne passe personalizedMessage que si `username`).
+ * - compte neuf : "Bonjour <nom>" + classe/chapitre du compte, pas de message personnalisé
+ *   (aucun historique pour l'alimenter).
+ * - compte avec historique : pareil, plus le message personnalisé ci-dessus. */
+export default function WelcomeCard({ username, classeNom, chapitre, personalizedMessage, onSuggestionClick }) {
+  const suggestions = buildSuggestions(chapitre)
+  const contextLine = classeNom ? `${classeNom}${chapitre ? " · " + chapitre : ""}` : ""
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, ease: "easeOut" }}
+      className="flex flex-col items-center px-2 text-center"
+    >
+      <img
+        src="/logo-hakili-lab.png"
+        srcSet="/logo-hakili-lab.png 1x, /logo-hakili-lab@2x.png 2x"
+        width={72}
+        height={72}
+        alt="Hakili Lab"
+        className="h-14 w-14 md:h-[72px] md:w-[72px]"
+      />
+
+      <p className="font-heading mt-3 text-xl font-extrabold">{username ? `Bonjour ${username}` : "Bonjour"}</p>
+
+      {contextLine && <p className="mt-1 text-sm text-base-content/50">{contextLine}</p>}
+
+      {personalizedMessage && (
+        <div className="mt-4">
+          <PersonalizedMessage text={personalizedMessage} />
         </div>
-      </Card>
+      )}
+
+      {suggestions.length > 0 && (
+        <div className="mt-5 w-full max-w-[440px]">
+          <SuggestionButtons suggestions={suggestions} onSuggestionClick={onSuggestionClick} />
+        </div>
+      )}
     </motion.div>
   )
 }

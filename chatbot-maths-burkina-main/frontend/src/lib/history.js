@@ -4,7 +4,7 @@
 export const MAX_HISTORY_MESSAGES = 12
 
 /**
- * Convertit les messages du chat (type "user"/"bot"/"exercise"/"remediation"...) en historique
+ * Convertit les messages du chat (type "user"/"bot"/"exercise"/"prerequis"...) en historique
  * `[{role, content}]` envoyé au backend pour la mémoire de conversation.
  *
  * Important : un message dont le texte est vide (ex: une photo d'exercice envoyée sans consigne
