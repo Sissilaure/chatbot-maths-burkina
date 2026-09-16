@@ -9,6 +9,23 @@ import { useIsMobile } from "../lib/useMediaQuery.js"
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl
 
+/** Détruit un PDFDocumentProxy (ou un RenderTask via .cancel) sans jamais planter l'app si
+ * l'objet n'a plus la méthode attendue : observé en réel (mobile ET desktop, prod ET dev),
+ * "pdfRef.current?.destroy is not a function" plantait tout l'arbre de rendu via ErrorBoundary
+ * — l'effacement d'une ref optionnelle (`?.`) protège contre null/undefined, mais pas contre un
+ * objet bien présent qui n'a simplement plus cette méthode (piste probable : un second chargement
+ * du même document, déclenché par un changement rapide de chapitre/fermeture-réouverture, qui
+ * fait courir deux instances de pdf.js en parallèle sur le même ref). Un nettoyage de ressource
+ * ne doit JAMAIS pouvoir faire planter le rendu — au pire, une ressource pdf.js reste non libérée
+ * un instant, jamais une page blanche pour l'élève. */
+function safeCleanup(obj, method) {
+  try {
+    obj?.[method]?.()
+  } catch (e) {
+    console.warn(`[CourseViewer] Échec silencieux de ${method}() :`, e)
+  }
+}
+
 /**
  * Visualiseur de cours "lecture seule" : rend chaque page du PDF sur un <canvas> via pdf.js,
  * plutôt que d'ouvrir le fichier dans le lecteur PDF natif du navigateur (voir handleCourse dans
@@ -46,7 +63,7 @@ export default function CourseViewer({ open, onClose, classCode, chapter }) {
         if (cancelled) return
         const pdf = await pdfjsLib.getDocument({ data: buffer }).promise
         if (cancelled) {
-          pdf.destroy()
+          safeCleanup(pdf, "destroy")
           return
         }
         pdfRef.current = pdf
@@ -60,7 +77,7 @@ export default function CourseViewer({ open, onClose, classCode, chapter }) {
 
     return () => {
       cancelled = true
-      pdfRef.current?.destroy()
+      safeCleanup(pdfRef.current, "destroy")
       pdfRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -85,7 +102,7 @@ export default function CourseViewer({ open, onClose, classCode, chapter }) {
       canvas.width = viewport.width
       canvas.height = viewport.height
 
-      renderTaskRef.current?.cancel()
+      safeCleanup(renderTaskRef.current, "cancel")
       const task = page.render({ canvasContext: ctx, viewport })
       renderTaskRef.current = task
       try {
@@ -98,7 +115,7 @@ export default function CourseViewer({ open, onClose, classCode, chapter }) {
 
     return () => {
       cancelled = true
-      renderTaskRef.current?.cancel()
+      safeCleanup(renderTaskRef.current, "cancel")
     }
   }, [status, pageNum])
 
